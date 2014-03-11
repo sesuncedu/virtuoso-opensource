@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -470,6 +470,8 @@ void
 file_path_assert (caddr_t fname_cvt, caddr_t *err_ret, int free_fname_cvt)
 {
   caddr_t err = NULL;
+  if (!DV_STRINGP (fname_cvt))
+    sqlr_new_error ("42000", "FS....", "File path not a string");
   if (PATH_MAX < (box_length (fname_cvt) - 1))
     err = srv_make_new_error ("42000", "FA117",
       "File path '%.200s...' is too long (%ld chars), OS limit is %ld chars",
@@ -657,6 +659,23 @@ signal_error:
   if (NULL != err)
     sqlr_resignal (err);
   return res;
+}
+
+
+caddr_t
+bif_file_read_line (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  char buf[10000];
+  dk_session_t * ses = bif_strses_arg (qst, args, 0, "file_read_line");
+  int rc = -1;
+  CATCH_READ_FAIL (ses)
+  {
+    rc = dks_read_line (ses, buf, sizeof (buf));
+  }
+  END_READ_FAIL (ses);
+  if (-1 == rc)
+    return box_num (0);
+  return box_n_chars (buf, rc);
 }
 
 
@@ -1167,11 +1186,11 @@ bif_sys_dirlist (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   df = opendir (fname_cvt);
 #else
   fname_pattern_end = box_length (fname_cvt);
-  while (0 == fname_cvt [fname_pattern_end - 1])
+  while (0 == fname_cvt[fname_pattern_end - 1])
     fname_pattern_end--;
   fname_pattern = dk_alloc_box (fname_pattern_end + 3, DV_STRING);
   memcpy (fname_pattern, fname_cvt, fname_pattern_end);
-  if ('\\' != fname_cvt [fname_pattern_end - 1])
+  if ('\\' != fname_cvt[fname_pattern_end - 1])
     fname_pattern[fname_pattern_end++] = '\\';
   fname_pattern[fname_pattern_end++] = '*';
   fname_pattern[fname_pattern_end] = '\0';
@@ -1192,15 +1211,15 @@ bif_sys_dirlist (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 	    {
 	      if (strlen (fname_cvt) + strlen (DIRNAME (de)) + 1 < PATH_MAX)
 		{
-                  int hit = 0;
-                  caddr_t raw_name;
-                  int make_wide_name;
+		  int hit = 0;
+		  caddr_t raw_name;
+		  int make_wide_name;
 #ifndef WIN32
-                  char path [PATH_MAX];
+		  char path[PATH_MAX];
 		  snprintf (path, sizeof (path), "%s/%s", fname_cvt, DIRNAME (de));
 		  V_STAT (path, &st);
 		  if (((st.st_mode & S_IFMT) == S_IFDIR) && files == 0)
-		    hit = 1; /* Different values of \c hit are solely for debugging purposes */
+		    hit = 1;	/* Different values of \c hit are solely for debugging purposes */
 		  else if (((st.st_mode & S_IFMT) == S_IFREG) && files == 1)
 		    hit = 2;
 		  else if (((st.st_mode & S_IFMT) == S_IFLNK) && files == 2)
@@ -1208,57 +1227,58 @@ bif_sys_dirlist (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 		  else if (((st.st_mode & S_IFMT) != 0) && files == 3)
 		    hit = 4;
 #else
-                  if (files == 0 && (FILE_ATTRIBUTE_DIRECTORY & de->dwFileAttributes) > 0)
+		  if (files == 0 && (FILE_ATTRIBUTE_DIRECTORY & de->dwFileAttributes) > 0)
 		    hit = 5;
-                  else if (files == 1 && (FILE_ATTRIBUTE_DIRECTORY & de->dwFileAttributes) == 0)
+		  else if (files == 1 && (FILE_ATTRIBUTE_DIRECTORY & de->dwFileAttributes) == 0)
 		    hit = 6;
-                  else if (files == 3)
-                    hit = 7;
+		  else if (files == 3)
+		    hit = 7;
 #endif
-                  if (!hit)
-                    goto next_file;
-                  raw_name = box_dv_short_string (DIRNAME (de));
-                  make_wide_name = 0;
-                  if (i18n_wide_file_names)
-                    {
-                      char *tail;
-                      for (tail = raw_name; '\0' != tail[0]; tail++)
-                        {
-                          if ((tail[0] >= ' ') && (tail[0] < 0x7f))
-                            continue;
-                          make_wide_name = 1;
-                          break;
-                        }
-                    }
-                  if (make_wide_name)
-                    {
-                      int buflen = (box_length (raw_name) - 1) / i18n_volume_encoding->eh_minsize;
-                      int state = 0;
-                      wchar_t *buf = dk_alloc_box ((buflen+1) * sizeof (wchar_t), DV_WIDE);
-                      wchar_t *wide_name;
-                      const char *raw_tail = raw_name;
-                      int res = i18n_volume_encoding->eh_decode_buffer_to_wchar (
-                        buf, buflen, &raw_tail, raw_name + box_length (raw_name) - 1,
-                        i18n_volume_encoding, state );
-                      if (res < 0)
-                        {
-                          dk_free_box (raw_name);
-                          goto next_file; /*!!! TBD Emergency encoding */
-                        }
-                      if (res < buflen-1)
-                        {
-                          wide_name = dk_alloc_box ((res+1) * sizeof (wchar_t), DV_WIDE);
-                          memcpy (wide_name, buf, res * sizeof (wchar_t));
-                          dk_free_box (buf);
-                        }
-                      else
-                        wide_name = buf;
-                      wide_name [res] = 0;
-                      dk_set_push (&dir_list, wide_name);
-                      dk_free_box (raw_name);
-                    }
-                  else
-                    dk_set_push (&dir_list, raw_name);
+		  if (!hit)
+		    goto next_file;
+		  raw_name = box_dv_short_string (DIRNAME (de));
+		  make_wide_name = 0;
+		  if (i18n_wide_file_names)
+		    {
+		      char *tail;
+		      for (tail = raw_name; '\0' != tail[0]; tail++)
+			{
+			  if ((tail[0] >= ' ') && (tail[0] < 0x7f))
+			    continue;
+			  make_wide_name = 1;
+			  break;
+			}
+		    }
+		  if (make_wide_name)
+		    {
+		      int buflen = (box_length (raw_name) - 1) / i18n_volume_encoding->eh_minsize;
+		      int state = 0;
+		      wchar_t *buf = dk_alloc_box ((buflen + 1) * sizeof (wchar_t), DV_WIDE);
+		      wchar_t *wide_name;
+		      const char *raw_tail = raw_name;
+		      int res =
+			  i18n_volume_encoding->eh_decode_buffer_to_wchar (buf, buflen, &raw_tail,
+			  raw_name + box_length (raw_name) - 1,
+			  i18n_volume_encoding, state);
+		      if (res < 0)
+			{
+			  dk_free_box (raw_name);
+			  goto next_file;	/*!!! TBD Emergency encoding */
+			}
+		      if (res < buflen - 1)
+			{
+			  wide_name = dk_alloc_box ((res + 1) * sizeof (wchar_t), DV_WIDE);
+			  memcpy (wide_name, buf, res * sizeof (wchar_t));
+			  dk_free_box (buf);
+			}
+		      else
+			wide_name = buf;
+		      wide_name[res] = 0;
+		      dk_set_push (&dir_list, wide_name);
+		      dk_free_box (raw_name);
+		    }
+		  else
+		    dk_set_push (&dir_list, raw_name);
 		}
 	      else
 		{
@@ -1273,9 +1293,9 @@ bif_sys_dirlist (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 		  goto error_end;
 		}
 	    }
-next_file: ;
+	next_file:;
 #ifdef WIN32
-          rc = FindNextFile (df, &fd) ? 0 : 1;
+	  rc = FindNextFile (df, &fd) ? 0 : 1;
 #endif
 	}
       while (de);
@@ -1293,22 +1313,17 @@ next_file: ;
       err_msg = virt_strerror (errn);
 #else
       char msg_buf[200];
-      DWORD dw = GetLastError();
+      DWORD dw = GetLastError ();
 
       err_msg = &msg_buf[0];
       msg_buf[0] = 0;
-      FormatMessage(
-        FORMAT_MESSAGE_FROM_SYSTEM,
-        NULL,
-        dw,
-        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-        (LPTSTR) &msg_buf[0], sizeof (msg_buf), NULL);
+      FormatMessage (FORMAT_MESSAGE_FROM_SYSTEM,
+	  NULL, dw, MAKELANGID (LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR) & msg_buf[0], sizeof (msg_buf), NULL);
 #endif
       if (BOX_ELEMENTS (args) > 2)
 	{
 	  if (ssl_is_settable (args[2]))
-	    qst_set (qst, args[2],
-		(caddr_t) box_dv_short_string (err_msg));
+	    qst_set (qst, args[2], (caddr_t) box_dv_short_string (err_msg));
 	}
       else
 	{
@@ -1317,9 +1332,176 @@ next_file: ;
 	}
     }
   lst = list_to_array (dk_set_nreverse (dir_list));
-  if (BOX_ELEMENTS (args) > 3 && bif_long_arg (qst, args, 3, "sys_dirlist") &&
-      IS_BOX_POINTER (lst) && BOX_ELEMENTS (lst))
+  if (BOX_ELEMENTS (args) > 3 && bif_long_arg (qst, args, 3, "sys_dirlist") && IS_BOX_POINTER (lst) && BOX_ELEMENTS (lst))
     qsort (lst, BOX_ELEMENTS (lst), sizeof (caddr_t), str_compare);
+error_end:
+  dk_free_box (fname_cvt);
+#ifdef WIN32
+  dk_free_box (fname_pattern);
+#endif
+  return lst;
+}
+
+
+caddr_t
+sys_dirlist (caddr_t fname, int files)
+{
+  caddr_t fname_cvt;
+  long errn = 0;
+  dk_set_t dir_list = NULL;
+#ifndef WIN32
+  DIR *df = 0;
+  struct dirent *de;
+  struct stat st;
+#else
+  ptrlong rc = 0;
+  WIN32_FIND_DATA fd, *de;
+  HANDLE df;
+  caddr_t fname_pattern;
+  size_t fname_pattern_end;
+#endif
+  caddr_t lst = NULL;
+  fname_cvt = file_native_name (fname);
+#ifndef WIN32
+  df = opendir (fname_cvt);
+#else
+  fname_pattern_end = box_length (fname_cvt);
+  while (0 == fname_cvt[fname_pattern_end - 1])
+    fname_pattern_end--;
+  fname_pattern = dk_alloc_box (fname_pattern_end + 3, DV_STRING);
+  memcpy (fname_pattern, fname_cvt, fname_pattern_end);
+  if ('\\' != fname_cvt[fname_pattern_end - 1])
+    fname_pattern[fname_pattern_end++] = '\\';
+  fname_pattern[fname_pattern_end++] = '*';
+  fname_pattern[fname_pattern_end] = '\0';
+  df = FindFirstFile (fname_pattern, &fd);
+#endif
+  if (CHECKFH (df))
+    {
+      do
+	{
+#ifndef WIN32
+	  de = readdir (df);
+#else
+	  de = NULL;
+	  if (rc == 0)
+	    de = &fd;
+#endif
+	  if (de)
+	    {
+	      if (strlen (fname_cvt) + strlen (DIRNAME (de)) + 1 < PATH_MAX)
+		{
+		  int hit = 0;
+		  caddr_t raw_name;
+		  int make_wide_name;
+#ifndef WIN32
+		  char path[PATH_MAX];
+		  snprintf (path, sizeof (path), "%s/%s", fname_cvt, DIRNAME (de));
+		  stat (path, &st);
+		  if (((st.st_mode & S_IFMT) == S_IFDIR) && files == 0)
+		    hit = 1;	/* Different values of \c hit are solely for debugging purposes */
+		  else if (((st.st_mode & S_IFMT) == S_IFREG) && files == 1)
+		    hit = 2;
+		  else if (((st.st_mode & S_IFMT) == S_IFLNK) && files == 2)
+		    hit = 3;
+		  else if (((st.st_mode & S_IFMT) != 0) && files == 3)
+		    hit = 4;
+#else
+		  if (files == 0 && (FILE_ATTRIBUTE_DIRECTORY & de->dwFileAttributes) > 0)
+		    hit = 5;
+		  else if (files == 1 && (FILE_ATTRIBUTE_DIRECTORY & de->dwFileAttributes) == 0)
+		    hit = 6;
+		  else if (files == 3)
+		    hit = 7;
+#endif
+		  if (!hit)
+		    goto next_file;
+		  raw_name = box_dv_short_string (DIRNAME (de));
+		  make_wide_name = 0;
+		  if (i18n_wide_file_names)
+		    {
+		      char *tail;
+		      for (tail = raw_name; '\0' != tail[0]; tail++)
+			{
+			  if ((tail[0] >= ' ') && (tail[0] < 0x7f))
+			    continue;
+			  make_wide_name = 1;
+			  break;
+			}
+		    }
+		  if (make_wide_name)
+		    {
+		      int buflen = (box_length (raw_name) - 1) / i18n_volume_encoding->eh_minsize;
+		      int state = 0;
+		      wchar_t *buf = dk_alloc_box ((buflen + 1) * sizeof (wchar_t), DV_WIDE);
+		      wchar_t *wide_name;
+		      const char *raw_tail = raw_name;
+		      int res =
+			  i18n_volume_encoding->eh_decode_buffer_to_wchar (buf, buflen, &raw_tail,
+			  raw_name + box_length (raw_name) - 1,
+			  i18n_volume_encoding, state);
+		      if (res < 0)
+			{
+			  dk_free_box (raw_name);
+			  goto next_file;	/*!!! TBD Emergency encoding */
+			}
+		      if (res < buflen - 1)
+			{
+			  wide_name = dk_alloc_box ((res + 1) * sizeof (wchar_t), DV_WIDE);
+			  memcpy (wide_name, buf, res * sizeof (wchar_t));
+			  dk_free_box (buf);
+			}
+		      else
+			wide_name = buf;
+		      wide_name[res] = 0;
+		      dk_set_push (&dir_list, wide_name);
+		      dk_free_box (raw_name);
+		    }
+		  else
+		    dk_set_push (&dir_list, raw_name);
+		}
+	      else
+		{
+/* This bug is possible only in UNIXes, because it requires the use of links,
+   but WIN32 case added too, due to paranoia. */
+#ifndef WIN32
+		  closedir (df);
+#else
+		  FindClose (df);
+#endif
+		  goto error_end;
+		}
+	    }
+	next_file:;
+#ifdef WIN32
+	  rc = FindNextFile (df, &fd) ? 0 : 1;
+#endif
+	}
+      while (de);
+#ifndef WIN32
+      closedir (df);
+#else
+      FindClose (df);
+#endif
+    }
+  else
+    {
+      const char *err_msg;
+#ifndef WIN32
+      errn = errno;
+      err_msg = virt_strerror (errn);
+#else
+      char msg_buf[200];
+      DWORD dw = GetLastError ();
+
+      err_msg = &msg_buf[0];
+      msg_buf[0] = 0;
+      FormatMessage (FORMAT_MESSAGE_FROM_SYSTEM,
+	  NULL, dw, MAKELANGID (LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR) & msg_buf[0], sizeof (msg_buf), NULL);
+#endif
+      goto error_end;
+    }
+  lst = list_to_array (dk_set_nreverse (dir_list));
 error_end:
   dk_free_box (fname_cvt);
 #ifdef WIN32
@@ -1351,7 +1533,8 @@ file_native_name (caddr_t se_name)
 	buf = dk_alloc_box (bufsize + 1, DV_STRING);
 	buf_end = buf + bufsize;
 	end_of_dat = i18n_volume_encoding->eh_encode_wchar_buffer (
-	    ((const wchar_t *) se_name), ((const wchar_t *) se_name) + wchars, buf, buf_end, i18n_volume_encoding);
+          ((const wchar_t *)se_name), ((const wchar_t *)se_name) + wchars, buf, buf_end,
+          i18n_volume_encoding );
 	if (end_of_dat == buf_end)
 	  {
 	    buf_end[0] = '\0';
@@ -1404,9 +1587,7 @@ file_native_name (caddr_t se_name)
       switch (fname_tail[0])
 	{
 	  /* case '|': fname_tail[0] = ':'; break; */
-	case '/':
-	  fname_tail[0] = '\\';
-	  break;
+        case '/': fname_tail[0] = '\\'; break;
 	}
     }
   if ((fname_tail - 1) >= volume_fname && *(fname_tail - 1) == '\\')
@@ -3883,7 +4064,7 @@ bif_mime_header (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   return result ? result : NEW_DB_NULL;
 }
 
-static caddr_t 
+static caddr_t
 bif_mime_tree_ses (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
   dk_session_t *ses = (dk_session_t *) bif_strses_arg (qst, args, 0, "mime_tree");
@@ -4671,11 +4852,11 @@ gz_s_free (gz_stream *s)
     }
 
   if (s->inbuf)
-    dk_free (s->inbuf, -1);
+    dk_free_box (s->inbuf);
   if (s->outbuf)
-    dk_free (s->outbuf, -1);
+    dk_free_box (s->outbuf);
   if (s)
-    dk_free (s, -1);
+    dk_free (s, sizeof (gz_stream));
   return err;
 }
 
@@ -4799,7 +4980,7 @@ gz_init_ses (dk_session_t * ses_out)
   err = deflateInit2 (&(s->stream), level,
       Z_DEFLATED, -MAX_WBITS, DEF_MEM_LEVEL, strategy);
 
-  s->stream.next_out = s->outbuf = (Byte *) dk_alloc (Z_BUFSIZE);
+  s->stream.next_out = s->outbuf = (Byte *) dk_alloc_box (Z_BUFSIZE, DV_BIN);
   if (err != Z_OK || s->outbuf == Z_NULL)
     {
       gz_s_free (s);
@@ -5888,7 +6069,7 @@ bif_vector_sort (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   caddr_t in_vector, out_vector;
   int inx;
   in_vector = bif_strict_array_or_null_arg (qst, args, 0, "__vector_sort");
-  if (in_vector == NULL || in_vector == NEW_DB_NULL)
+  if (in_vector == NULL || DV_TYPE_OF (in_vector) == DV_DB_NULL)
     return NEW_DB_NULL;
   DO_BOX (caddr_t, line, inx, ((caddr_t *) in_vector))
     {
@@ -6191,6 +6372,14 @@ signal_error:
 }
 
 caddr_t
+bif_read_object (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  dk_session_t * ses = (dk_session_t *) bif_strses_arg (qst, args, 0, "read_object");
+  return PrpcReadObject (ses);
+}
+
+
+caddr_t
 bif_getenv (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
   caddr_t var = bif_string_arg (qst, args, 0, "getenv");
@@ -6439,11 +6628,13 @@ err_end:
 /* tiny CSV parser */
 #define CSV_DELIM 		','
 #define CSV_QUOTE		'\"'
+#define CSV_ESCAPE              '%'
 
 #define CSV_ROW_NOT_STARTED 	0
 #define CSV_FIELD_NOT_STARTED	1
 #define CSV_FIELD_STARTED	2
 #define CSV_FIELD_MAY_END	3
+#define CSV_ESC_SEQUENCE_STARTED 4
 
 #define CSV_FIELD(set,ses) \
     do \
@@ -6477,20 +6668,29 @@ err_end:
 static caddr_t
 csv_field (dk_session_t * ses, int mode)
 {
+  static void *r1, *r2, *r3;
   caddr_t regex, ret = NULL, str = strses_string (ses);
   if (mode == CSV_LAX && !strcmp (str, "NULL"))
     {
       ret = NEW_DB_NULL;
     }
-  else if (NULL != (regex = regexp_match_01 ("^[\\+\\-]?[0-9]+\\.[0-9]*$", str, 0)))
+  else if (NULL != (regex = regexp_match_01_const ("^[\\+\\-]?[0-9]+\\.[0-9]*$", str, 0, &r1)))
     {
-      float d = 0;
-      sscanf (str, "%f", &d);
-      ret = box_float (d);
+      double d = 0;
+      sscanf (str, "%lf", &d);
+      ret = box_double (d);
       dk_free_box (str);
       dk_free_box (regex);
     }
-  else if (NULL != (regex = regexp_match_01 ("^[\\+\\-]?[0-9]+$", str, 0)))
+  else if (NULL != (regex = regexp_match_01_const ("^[\\+\\-]?[0-9]+\\.[0-9]*[Ee][\\+\\-]?[0-9]+$", str, 0, &r3)))
+    {
+      double d = 0;
+      sscanf (str, "%lg", &d);
+      ret = box_double (d);
+      dk_free_box (str);
+      dk_free_box (regex);
+    }
+  else if (NULL != (regex = regexp_match_01_const ("^[\\+\\-]?[0-9]+$", str, 0, &r2)))
     {
       ret = box_num (atol (str));
       dk_free_box (str);
@@ -6527,6 +6727,8 @@ get_uchar_from_session (dk_session_t * in, encoding_handler_t * eh)
   return c;
 }
 
+int csv_field_escapes = 1;
+
 caddr_t
 bif_get_csv_row (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
@@ -6535,8 +6737,10 @@ bif_get_csv_row (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   dk_session_t *fl;
   caddr_t res = NULL;
   int quoted = 0, error = CSV_OK, mode = CSV_STRICT, signal_error = 0;
-  unsigned char state = CSV_ROW_NOT_STARTED, delim = CSV_DELIM, quote = CSV_QUOTE;
+  unsigned char state = CSV_ROW_NOT_STARTED, delim = CSV_DELIM, quote = CSV_QUOTE, esc = CSV_ESCAPE;
   unichar c;
+  unichar escaped[2];
+  int escaped_idx = 0;
   char utf8char[MAX_UTF8_CHAR];
   encoding_handler_t *eh = &eh__ISO8859_1;
   if (BOX_ELEMENTS (args) > 1)
@@ -6567,6 +6771,8 @@ bif_get_csv_row (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 	sqlr_new_error ("22023", "CSV03", "CSV parsing mode flag must be strict:1 or relaxing:2");
       mode = f;
     }
+  escaped[0] = 0;
+  escaped[1] = 0;
   fl = strses_allocate ();
   CATCH_READ_FAIL (in)
   {
@@ -6649,12 +6855,48 @@ bif_get_csv_row (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 		      goto end;	/* row end */
 		    }
 		}
+		      else if (c == esc && csv_field_escapes)
+		        {
+                          state = CSV_ESC_SEQUENCE_STARTED;
+		          escaped_idx = 0;
+		        }
 	      else
 		{
 		  CSV_CHAR (c, fl);
 		}
 	    }
 	    break;
+	      case CSV_ESC_SEQUENCE_STARTED:
+	          {                             /*30                 9 A B C D E F40 41 42 43 44 45 46*/
+	            static char digit_weights[] = {0,1,2,3,4,5,6,7,8,9,0,0,0,0,0,0,0,10,11,12,13,14,15};
+	            if (c == esc)
+	              {
+                        CSV_CHAR (c, fl);
+                        escaped_idx = escaped[0] = escaped[1] = 0;
+                        state = CSV_FIELD_STARTED;
+	              }
+	            else if (c >= 0x30 && c <= 0x46)
+                      {
+                        escaped[escaped_idx++] = c;
+                        if (escaped_idx >= 2)
+                          {
+                            unichar ch = 16 * digit_weights[ escaped[0] - 0x30] + digit_weights[ escaped[1] - 0x30 ];
+                            CSV_CHAR (ch, fl);
+                            escaped_idx = escaped[0] = escaped[1] = 0;
+                            state = CSV_FIELD_STARTED;
+                          }
+                      }
+	            else
+                      {
+                        /* wrong digit in esc sequence */
+                        CSV_CHAR (esc, fl);
+                        CSV_CHAR (escaped[0], fl);
+                        CSV_CHAR (escaped[0], fl);
+                        escaped_idx = escaped[0] = escaped[1] = 0;
+                        state = CSV_FIELD_STARTED;
+                      }
+	          }
+	          break;
 	  case CSV_FIELD_MAY_END:
 	    {
 	      if (c == quote)
@@ -6732,11 +6974,9 @@ bif_get_plaintext_row (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   char *read_begin, *eol = NULL;
   caddr_t res = NULL;
   int buf_is_allocated = 0;
-  int buf_add_len, new_buf_size;
+  int buf_add_len, min_new_buf_size, new_buf_size;
   char *new_buf;
   char c;
-  CATCH_READ_FAIL (ses)
-    {
 /* First, full scan of buffered in hope that the whole line is in session buffer already */
       read_begin = ses->dks_in_buffer + ses->dks_in_read;
       eol = (char *)memchr (read_begin, '\n', ses->dks_in_fill - ses->dks_in_read);
@@ -6747,11 +6987,26 @@ bif_get_plaintext_row (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
           goto res_done; /* see below */
         }
 /* Now we know that the '\n' is not in buffer so an extra copying is unavoidable */
+  CATCH_READ_FAIL (ses)
+    {
   buf_add_len = ses->dks_in_fill - ses->dks_in_read;
 add_portion_to_buf:
   if (buf_tail + buf_add_len + 1 > buf_end)
     {
-      new_buf_size = (buf_end + buf_add_len + 1 - buf) * 2;
+          min_new_buf_size = buf_tail + buf_add_len + 1 - buf;
+          if (min_new_buf_size > MAX_BOX_LENGTH)
+            goto res_done; /* abnormally long line, can't return it */
+          new_buf_size = min_new_buf_size * 2;
+#if 0 /* no big beed */
+          if (2 <= BOX_ELEMENTS (args))
+            {
+              int recommended_buf_size = bif_long_arg (qst, args, 1, "get_plaintext_row");
+              if (new_buf_size < recommended_buf_size)
+                new_buf_size = recommended_buf_size;
+            }
+#endif
+          if (new_buf_size > MAX_BOX_LENGTH)
+            new_buf_size = MAX_BOX_LENGTH;
       new_buf = (char *)dk_alloc (new_buf_size);
       memcpy (new_buf, buf, buf_tail - buf);
       buf_end = new_buf + new_buf_size;
@@ -6804,79 +7059,74 @@ bif_file_init (void)
 {
   run_executable_mtx = mutex_allocate ();
   bif_define ("string_to_file", bif_string_to_file);
-  bif_define_typed ("server_root", bif_server_root, &bt_varchar);
-  bif_define_typed ("file_to_string", bif_file_to_string, &bt_varchar);
-  bif_define_typed ("file_to_string_output", bif_file_to_string_session, &bt_any);
-  bif_define_typed ("file_to_string_output_utf8", bif_file_to_string_session_utf8, &bt_any);
-  bif_define_typed ("file_append_to_string_output", bif_file_append_to_string_session, &bt_integer);
-  bif_define_typed ("file_append_to_string_output_utf8", bif_file_append_to_string_session_utf8, &bt_integer);
-  bif_define_typed ("virtuoso_ini_path", bif_virtuoso_ini_path, &bt_varchar);
-  bif_define_typed ("virtuoso_ini_item_value", bif_virtuoso_ini_item_value, &bt_varchar);
-  bif_define_typed ("cfg_section_count", bif_cfg_section_count, &bt_integer);
-  bif_define_typed ("cfg_item_count", bif_cfg_item_count, &bt_integer);
-  bif_define_typed ("cfg_section_name", bif_cfg_section_name, &bt_varchar);
-  bif_define_typed ("cfg_item_name", bif_cfg_item_name, &bt_varchar);
-  bif_define_typed ("cfg_item_value", bif_cfg_item_value, &bt_varchar);
+  bif_define_ex ("server_root", bif_server_root, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("file_to_string", bif_file_to_string, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("file_to_string_output", bif_file_to_string_session, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("file_to_string_output_utf8", bif_file_to_string_session_utf8, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("file_append_to_string_output", bif_file_append_to_string_session, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("file_append_to_string_output_utf8", bif_file_append_to_string_session_utf8, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("file_read_line", bif_file_read_line, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("virtuoso_ini_path", bif_virtuoso_ini_path, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("virtuoso_ini_item_value", bif_virtuoso_ini_item_value, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("cfg_section_count", bif_cfg_section_count, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("cfg_item_count", bif_cfg_item_count, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("cfg_section_name", bif_cfg_section_name, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("cfg_item_name", bif_cfg_item_name, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("cfg_item_value", bif_cfg_item_value, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define ("cfg_write", bif_cfg_write);
-  bif_define_typed ("adler32", bif_adler32, &bt_integer);
+  bif_define_ex ("adler32", bif_adler32, BMD_RET_TYPE, &bt_integer, BMD_DONE);
   bif_define ("tridgell32", bif_tridgell32);
-  bif_define_typed ("mdigest5", bif_mdigest5, &bt_varchar);
-  bif_define_typed ("md5", bif_md5, &bt_varchar);
-  bif_define_typed ("md5_init", bif_md5_init, &bt_varchar);
-  bif_define_typed ("md5_update", bif_md5_update, &bt_varchar);
-  bif_define_typed ("md5_final", bif_md5_final, &bt_varchar);
-  bif_define_typed ("__vector_sort", bif_vector_sort, &bt_any);
-  bif_define ("uuid", bif_uuid);
-  bif_define ("rdf_struuid_impl", bif_uuid);
+  bif_define_ex ("mdigest5", bif_mdigest5, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("md5", bif_md5, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("md5_init", bif_md5_init, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("md5_update", bif_md5_update, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("md5_final", bif_md5_final, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("__vector_sort", bif_vector_sort, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("uuid", bif_uuid, BMD_ALIAS, "rdf_struuid_impl", BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define ("dime_compose", bif_dime_compose);
   bif_define ("dime_tree", bif_dime_tree);
-  bif_define_typed ("file_stat", bif_file_stat, &bt_any);
+  bif_define_ex ("file_stat", bif_file_stat, BMD_RET_TYPE, &bt_any, BMD_DONE);
   if (do_os_calls)
-    bif_define_typed ("system", bif_system, &bt_integer);
-  bif_define_typed ("run_executable", bif_run_executable, &bt_integer);
-  bif_define_typed ("mime_tree", bif_mime_tree, &bt_any);
-  bif_define_typed ("mime_header", bif_mime_header, &bt_any);
-  bif_define_typed ("mime_tree_ses", bif_mime_tree_ses, &bt_any);
-  bif_define_typed ("gz_compress", bif_gz_compress, &bt_varchar);
-  bif_define_typed ("string_output_gz_compress",
-      bif_string_output_gz_compress, &bt_integer);
+    bif_define_ex ("system", bif_system, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("run_executable", bif_run_executable, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("mime_tree", bif_mime_tree, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("mime_header", bif_mime_header, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("mime_tree_ses", bif_mime_tree_ses, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("gz_compress", bif_gz_compress, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_typed ("string_output_gz_compress", bif_string_output_gz_compress, &bt_integer);
   bif_define ("gz_uncompress", bif_gz_uncompress);
   bif_define ("gzip_uncompress", bif_gzip_uncompress);
-  bif_define_typed ("gz_compress_file", bif_gz_compress_file, &bt_integer);
-  bif_define_typed ("gz_uncompress_file", bif_gz_uncompress_file, &bt_integer);
+  bif_define_ex ("gz_compress_file", bif_gz_compress_file, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("gz_uncompress_file", bif_gz_uncompress_file, BMD_RET_TYPE, &bt_integer, BMD_DONE);
   bif_define ("unzip_file", bif_unzip_file);
   bif_define ("unzip_list", bif_unzip_list);
-  bif_define_typed ("sys_unlink", bif_sys_unlink, &bt_integer);
-  bif_define_typed ("sys_mkdir", bif_sys_mkdir, &bt_integer);
-  bif_define_typed ("sys_mkpath", bif_sys_mkpath, &bt_integer);
-  bif_define_typed ("mail_header", bif_get_mailmsg_hf, &bt_varchar);
-  bif_define_typed ("sys_dirlist", bif_sys_dirlist, &bt_any);
-  bif_define_typed ("file_delete", bif_file_delete, &bt_any);
-  bif_define_typed ("tmp_file_name", bif_tmp_file, &bt_varchar);
+  bif_define_ex ("sys_unlink", bif_sys_unlink, BMD_ALIAS, "file_unlink", BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("sys_mkdir", bif_sys_mkdir, BMD_ALIAS, "file_mkdir", BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("sys_mkpath", bif_sys_mkpath, BMD_ALIAS, "file_mkpath", BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("sys_dirlist", bif_sys_dirlist, BMD_ALIAS, "file_dirlist", BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("mail_header", bif_get_mailmsg_hf, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("file_delete", bif_file_delete, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("tmp_file_name", bif_tmp_file, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define ("http_mime_type_add", bif_http_mime_type_add);
-  bif_define_typed ("http_mime_type", bif_http_mime_type, &bt_varchar);
-  bif_define_typed ("delay", bif_sleep, &bt_integer);
+  bif_define_ex ("http_mime_type", bif_http_mime_type, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("delay", bif_sleep, BMD_RET_TYPE, &bt_integer, BMD_DONE);
   bif_set_uses_index (bif_sleep); /* is io sect, means can't hold a page wired */
-  bif_define_typed ("trace_on", bif_trace_on, &bt_any);
-  bif_define_typed ("trace_status", bif_trace_status, &bt_any);
-  bif_define_typed ("trace_off", bif_trace_off, &bt_any);
+  bif_define_ex ("trace_on", bif_trace_on, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("trace_status", bif_trace_status, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("trace_off", bif_trace_off, BMD_RET_TYPE, &bt_any, BMD_DONE);
   bif_define ("log_message", bif_log_message);
-  bif_define_typed ("sys_dir_is_allowed", bif_sys_dir_is_allowed,
-      &bt_integer);
+  bif_define_typed ("sys_dir_is_allowed", bif_sys_dir_is_allowed, &bt_integer);
   /* aliases of sys_... bifs */
-  bif_define_typed ("file_unlink", bif_sys_unlink, &bt_integer);
-  bif_define_typed ("file_mkdir", bif_sys_mkdir, &bt_integer);
-  bif_define_typed ("file_mkpath", bif_sys_mkpath, &bt_integer);
-  bif_define_typed ("file_dirlist", bif_sys_dirlist, &bt_any);
-  bif_define_typed ("file_rl", bif_file_rl, &bt_any);
-  bif_define_typed ("file_rb", bif_file_rb, &bt_any);
-  bif_define_typed ("file_rlo", bif_file_rlo, &bt_any);
-  bif_define_typed ("file_rlc", bif_file_rlc, &bt_any);
-  bif_define_typed ("file_open", bif_file_open, &bt_any);
-  bif_define_typed ("gz_file_open", bif_gz_file_open, &bt_any);
-  bif_define_typed ("get_csv_row", bif_get_csv_row, &bt_any);
-  bif_define_typed ("get_plaintext_row", bif_get_plaintext_row, &bt_any);
-  bif_define_typed ("getenv", bif_getenv, &bt_varchar);
+  bif_define_ex ("file_rl", bif_file_rl, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("file_rb", bif_file_rb, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("file_rlo", bif_file_rlo, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("file_rlc", bif_file_rlc, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("file_open", bif_file_open, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("read_object", bif_read_object, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("gz_file_open", bif_gz_file_open, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("get_csv_row", bif_get_csv_row, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("get_plaintext_row", bif_get_plaintext_row, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("getenv", bif_getenv, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
 #ifdef HAVE_BIF_GPF
   bif_define ("__gpf", bif_gpf);
 #endif
@@ -6889,8 +7139,8 @@ bif_file_init (void)
 #endif
 #endif
 #if defined (__APPLE__) && defined(SPOTLIGHT)
-  bif_define_typed ("spotlight_metadata", bif_spotlight_metadata, &bt_any);
-  bif_define_typed ("spotlight_status", bif_spotlight_status, &bt_any);
+  bif_define_ex ("spotlight_metadata", bif_spotlight_metadata, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("spotlight_status", bif_spotlight_status, BMD_RET_TYPE, &bt_any, BMD_DONE);
   init_file_acl_set ("/usr/bin/mdimport", &dba_execs_set);
 #endif
   set_ses_tmp_dir ();

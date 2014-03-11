@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -109,7 +109,10 @@ static id_hash_t * http_url_cache = NULL; /* WS cached URLs */
 long http_ses_trap = 0;
 int www_maintenance = 0;
 
-#define MAINTENANCE (NULL != www_maintenance_page && (wi_inst.wi_is_checkpoint_pending || www_maintenance || cpt_is_global_lock ()))
+#define MAINTENANCE (NULL != www_maintenance_page && (wi_inst.wi_is_checkpoint_pending || www_maintenance || cpt_is_global_lock (NULL)))
+
+size_t dk_alloc_cache_total (void * cache);
+void thr_alloc_cache_clear (thread_t * thr);
 
 caddr_t
 temp_aspx_dir_get (void)
@@ -1189,6 +1192,24 @@ ws_write_failed (ws_connection_t * ws)
   mutex_leave (ws_queue_mtx);
 }
 
+/* check request against server capabilities, e.g. expect header */
+static int
+ws_check_caps (ws_connection_t * ws)
+{
+  char *expect, *end;
+  expect = ws_header_field (ws->ws_lines, "Expect:", NULL);
+  if (!expect || !strlen (expect))
+    return 1;
+  end = expect + strlen (expect) - 1;
+  while (isspace (*expect)) expect++;
+  while (isspace (*end)) end--; end ++;
+  /* 100 continue is supported */
+  if ((end - expect) == 12 && 0 == strnicmp (expect, "100-continue", 12))
+    return 1;
+  ws_strses_reply (ws, "HTTP/1.1 417 Expectation Failed");
+  return 0;
+}
+
 static void
 ws_req_expect100 (ws_connection_t * ws)
 {
@@ -1662,7 +1683,7 @@ ws_clear (ws_connection_t * ws, int error_cleanup)
   if (ws->ws_cli)
     {
       memset (&ws->ws_cli->cli_activity, 0, sizeof (db_activity_t));
-      ws->ws_cli->cli_anytime_timeout = 0;
+      ws->ws_cli->cli_anytime_timeout_orig = ws->ws_cli->cli_anytime_timeout = 0;
     }
   if (!http_keep_hosting)
     hosting_clear_cli_attachments (ws->ws_cli, 0);
@@ -1979,6 +2000,7 @@ ws_strses_reply (ws_connection_t * ws, const char * volatile code)
   if (ws->ws_xslt_url)
     {
       dk_session_t * strses = ws->ws_strses;
+      client_connection_t * cli = ws->ws_cli;
       caddr_t url,
 	  xslt_url = ws->ws_xslt_url, xslt_parms = ws->ws_xslt_params;
       caddr_t err = NULL, * exec_params = NULL;
@@ -1998,7 +2020,20 @@ ws_strses_reply (ws_connection_t * ws, const char * volatile code)
 	  exec_params[6] = box_string ("PARAMS"); exec_params[7] = (caddr_t) &xslt_parms;
 	  exec_params[8] = box_string ("MEDIATYPE"); exec_params[9] = (caddr_t) &media_type;
 	  exec_params[10] = box_string ("ENC"); exec_params[11] = (caddr_t) &xsl_encoding;
-	  err = qr_exec (ws->ws_cli, http_xslt_qr, CALLER_LOCAL, NULL, NULL, NULL, exec_params, NULL, 1);
+	  IN_TXN;
+	  if (!cli->cli_trx->lt_threads)
+	    lt_wait_checkpoint ();
+	  lt_threads_set_inner (cli->cli_trx, 1);
+	  LEAVE_TXN;
+	  err = qr_exec (cli, http_xslt_qr, CALLER_LOCAL, NULL, NULL, NULL, exec_params, NULL, 1);
+	  IN_TXN;
+	  if (err && (err != (caddr_t) SQL_NO_DATA_FOUND))
+	    lt_rollback (cli->cli_trx, TRX_CONT);
+	  else
+	    lt_commit (cli->cli_trx, TRX_CONT);
+	  lt_threads_set_inner (cli->cli_trx, 0);
+	  LEAVE_TXN;
+	  cli_set_slice (cli, NULL, QI_NO_SLICE, NULL);
 	  dk_free_box ((box_t) exec_params);
 	}
       if (err)
@@ -3358,7 +3393,7 @@ request_do_again:
   is_vsmx = 0;
   is_http_binding = 0;
   is_physical_soap = 0;
-  cli->cli_start_time = time_now_msec;
+  cli_set_start_times (cli);
   cli->cli_terminate_requested = 0;
 
   p_name[0] = 0;
@@ -3374,7 +3409,7 @@ request_do_again:
       size_t alen;
       caddr_t apage;
 #ifdef _IMSG
-      if (ws->ws_port > 0) /* if POP3, NNTP or FTP just return */
+      if (ws->ws_port > 0) /* if POP3, IMAP, NNTP or FTP just return */
 	goto do_file;
 #endif
       print_slash = (www_maintenance_page[0] != '/');
@@ -3471,7 +3506,7 @@ request_do_again:
 	      MAKE_TRX_ERROR (rc, err, LT_ERROR_DETAIL (cli->cli_trx));
 	    }
 	}
-      dk_free_box (save_history_name); 
+      dk_free_box (save_history_name);
       dk_free_box (vdir);
 rec_err_end:
       if (err && err != (caddr_t) SQL_NO_DATA_FOUND)
@@ -3968,6 +4003,7 @@ do_file:
   /* instead of connection_set (cli, con_dav_v_name, NULL);
    * we'll clear all connection settings if connection is dirty */
   ws_connection_vars_clear (cli);
+  cli_free_dae (cli);
 
   dk_free_tree ((caddr_t) err);
   dk_free_tree ((box_t) ws->ws_lines);
@@ -3986,6 +4022,7 @@ http_client_ip (session_t * ses)
   return (box_dv_short_string (buf));
 }
 
+extern db_activity_t http_activity;
 #define IS_GATEWAY_PROXY(ws) (ws->ws_forward || \
     (http_proxy_address && (ws) && (ws)->ws_client_ip && !strcmp ((ws)->ws_client_ip, http_proxy_address)))
 
@@ -4086,15 +4123,25 @@ ws_read_req (ws_connection_t * ws)
 	      ws_strses_reply (ws, hit ? "HTTP/1.1 509 Bandwidth Limit Exceeded" : "HTTP/1.1 403 Forbidden");
 	      goto end_req;
 	    }
+	  if (0 == ws_check_caps (ws))
+	    {
+	      ws->ws_try_pipeline = 0;
+	      goto end_req;
+	    }
 	  if (ws_path_and_params (ws))
 	    goto end_req;
 #ifdef _IMSG
 	}
 #endif
       if (ws_auth_check (ws))
+	{
+	  memset (&ws->ws_cli->cli_activity, 0, sizeof (db_activity_t));
 	ws_request (ws);
+	  cli_set_slice (ws->ws_cli, NULL, QI_NO_SLICE, NULL);
+	  da_add (&http_activity, &ws->ws_cli->cli_activity);
+	}
 #ifdef _IMSG
-      /* clear POP3, NNTP & FTP port after work is done */
+      /* clear POP3, IMAP, NNTP & FTP port after work is done */
       ws->ws_port = 0;
 #endif
     }
@@ -4354,6 +4401,7 @@ ws_init_func (ws_connection_t * ws)
   semaphore_enter (ws->ws_thread->thr_sem);
   SET_THR_ATTR (ws->ws_thread, TA_IMMEDIATE_CLIENT, ws->ws_cli);
   sqlc_set_client (ws->ws_cli);
+  ws->ws_cli->cli_trx->lt_thr = ws->ws_thread;
   for (;;)
     {
       dk_session_t * ses;
@@ -4367,6 +4415,11 @@ ws_init_func (ws_connection_t * ws)
       if (!ses)
 	{
 	  http_trace (("ws %p to sleep\n", ws));
+	  if (ws->ws_thr_cache_clear)
+	    {
+	      ws->ws_thr_cache_clear = 0;
+	      thr_alloc_cache_clear (ws->ws_thread);
+	    }
 	  resource_store (ws_dbcs, (void*) ws);
 	  mutex_leave (ws_queue_mtx);
 	  semaphore_enter (ws->ws_thread->thr_sem);
@@ -4380,7 +4433,7 @@ ws_init_func (ws_connection_t * ws)
 	  session_accept (ses->dks_session, ws->ws_session->dks_session);
 	  ws->ws_session->dks_ws_status = DKS_WS_ACCEPTED;
 #if defined (_SSL) || defined (_IMSG)
-	  /* initialize ws stricture for ssl, pop3, nntp & ftp service */
+	  /* initialize ws stricture for ssl, pop3, imap, nntp & ftp service */
 	  ws_inet_session_init (ses, ws);
 #endif
 	  http_trace (("connect from queue accept ws %p ses %p\n", ws, ws->ws_session));
@@ -4435,7 +4488,7 @@ ws_ready (dk_session_t * accept)
       rc = session_accept (accept->dks_session, ws->ws_session->dks_session);
       ws->ws_session->dks_ws_status = DKS_WS_ACCEPTED;
 #if defined (_SSL) || defined (_IMSG)
-      /* initialize ws stricture for ssl, pop3, nntp & ftp service */
+      /* initialize ws stricture for ssl, pop3, imap, nntp & ftp service */
       ws_inet_session_init (accept, ws);
 #endif
       http_trace (("accept ws %p ses %p\n", ws, ws->ws_session));
@@ -4769,6 +4822,8 @@ bif_http_result (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   /* potentially long time when session is flushed or chunked, then should use io sect
      for now as almost we using to go to string session we keep it w/o io sect */
   /* IO_SECT (qst); */
+  if (DV_DB_NULL == dtp)
+    return NULL;
   if (dtp == DV_SHORT_STRING || dtp == DV_LONG_STRING || dtp == DV_C_STRING || dtp == DV_BIN)
     session_buffered_write (out, string, box_length (string) - (IS_STRING_DTP (DV_TYPE_OF (string)) ? 1 : 0));
   else if (dtp == DV_BLOB_HANDLE)
@@ -5275,7 +5330,8 @@ bif_http_limited (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   IN_TXN;
   DO_SET (lock_trx_t *, lt, &all_trxs)
     {
-      if ((lt->lt_threads > 0 || lt_has_locks (lt)) && lt->lt_client && lt->lt_client->cli_ws && lt->lt_client->cli_ws->ws_limited)
+      if ((lt->lt_threads > 0 || lt_has_locks (lt)) && lt->lt_client && !lt->lt_client->cli_terminate_requested && 
+	  lt->lt_client->cli_ws && lt->lt_client->cli_ws->ws_limited)
 	limited ++;
     }
   END_DO_SET ();
@@ -6112,7 +6168,8 @@ decode_base64_impl (char * src, char * end, char * table)
        } /* unknown symbols are ignored */
     }
     if (i>0) {
-	for(;i<4;c[i++]=0); /* will leave padding nulls - does not matter here */
+	for(;i<4;c[i++]=0)
+	  ; /* will leave padding nulls - does not matter here */
        base64_store24(&d, c);
     }
     *d=0;
@@ -7502,6 +7559,14 @@ int_client_ip (query_instance_t * qi, long dns_name)
 {
   caddr_t iaddr, ret;
 
+  if (!qi->qi_client->cli_ws && !qi->qi_client->cli_session) /* via scheduler or some internal client */
+    {
+      if (dns_name)
+	return box_dv_short_string ("localhost");
+      else
+	return box_dv_short_string ("127.0.0.1");
+    }
+
   if (!qi->qi_client->cli_ws)
     iaddr = http_client_ip (qi->qi_client->cli_session->dks_session);
   else
@@ -8320,12 +8385,68 @@ https_cert_verify_callback (int ok, void *_ctx)
 }
 
 int
+https_ssl_verify_callback (int ok, void *_ctx)
+{
+  X509_STORE_CTX *ctx;
+  SSL *ssl;
+  X509 *xs;
+  int errnum, verify, depth;
+  int errdepth;
+  char *cp, cp_buf[1024];
+  char *cp2, cp2_buf[1024];
+  uptrlong ap;
+
+  ctx = (X509_STORE_CTX *)_ctx;
+  ssl  = (SSL *)X509_STORE_CTX_get_app_data(ctx);
+  ap = (uptrlong) SSL_get_app_data (ssl);
+
+  xs       = X509_STORE_CTX_get_current_cert(ctx);
+  errnum   = X509_STORE_CTX_get_error(ctx);
+  errdepth = X509_STORE_CTX_get_error_depth(ctx);
+
+  cp  = X509_NAME_oneline(X509_get_subject_name(xs), cp_buf, sizeof (cp_buf));
+  cp2 = X509_NAME_oneline(X509_get_issuer_name(xs),  cp2_buf, sizeof (cp2_buf));
+
+  verify = (int) ((0xff000000 & ap) >> 24);
+  depth =  (int) (0xffffff & ap);
+
+  if (( errnum == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT
+	|| errnum == X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN
+	|| errnum == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY
+#if OPENSSL_VERSION_NUMBER >= 0x00905000
+	|| errnum == X509_V_ERR_CERT_UNTRUSTED
+#endif
+	|| errnum == X509_V_ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE)
+      && verify == HTTPS_VERIFY_OPTIONAL_NO_CA )
+    {
+      SSL_set_verify_result(ssl, X509_V_OK);
+      ok = 1;
+    }
+
+  if (!ok)
+    {
+      log_error ("HTTPS Certificate Verification: Error (%d): %s",
+	  errnum, X509_verify_cert_error_string(errnum));
+    }
+
+  if (errdepth > depth)
+    {
+      log_error ("HTTPS Certificate Verification: Certificate Chain too long "
+	  "(chain has %d certificates, but maximum allowed are only %ld)",
+	  errdepth, depth);
+      ok = 0;
+    }
+  return (ok);
+}
+
+int
 ssl_server_set_certificate (SSL_CTX* ssl_ctx, char * cert_name, char * key_name, char * extra)
 {
   char err_buf[1024];
   EVP_PKEY *pkey;
   X509 *x509;
 
+  /* TODO create internal OpenSSL engine for this */
   if (strstr (cert_name, "db:") == cert_name || strstr (key_name, "db:") == key_name)
     {
       xenc_key_t *k;
@@ -8403,7 +8524,7 @@ ssl_server_set_certificate (SSL_CTX* ssl_ctx, char * cert_name, char * key_name,
 		  break;
 		}
 	      CRYPTO_add(&k->xek_x509->references, 1, CRYPTO_LOCK_X509);
-              tok = strtok_r (NULL, ",", &tok_s);		  
+              tok = strtok_r (NULL, ",", &tok_s);
 	    }
 	  dk_free_box (str);
 	  cli->cli_user = saved_user;
@@ -8412,7 +8533,7 @@ ssl_server_set_certificate (SSL_CTX* ssl_ctx, char * cert_name, char * key_name,
 	{
 	  X509 *x = NULL;
 	  BIO *in;
-	  if ((in = BIO_new_file (extra, "r")) != NULL) 
+	  if ((in = BIO_new_file (extra, "r")) != NULL)
 	    {
 	      while ((x = PEM_read_bio_X509 (in, NULL, NULL, NULL)))
 		{
@@ -8450,7 +8571,7 @@ http_set_ssl_listen (dk_session_t * listening, caddr_t * https_opts)
   long https_cvdepth = -1;
   int i, len, https_client_verify = -1;
   ssl_meth = SSLv23_server_method ();
-  ssl_ctx = SSL_CTX_new (ssl_meth);
+  ssl_ctx = SSL_CTX_new ((SSL_METHOD *) ssl_meth);
 
   /* Initialize the parameters */
   len = BOX_ELEMENTS (https_opts);
@@ -9380,6 +9501,58 @@ bif_http_is_flushed (caddr_t *qst, caddr_t * err_ret, state_slot_t **args)
   return box_num(1);
 }
 
+static caddr_t
+bif_https_renegotiate (caddr_t *qst, caddr_t * err_ret, state_slot_t **args)
+{
+  char * me = "https_renegotiate";
+  query_instance_t *qi = (query_instance_t *)qst;
+  ws_connection_t *ws = qi->qi_client->cli_ws;
+#ifdef _SSL
+  SSL *ssl = NULL;
+#endif
+
+  if (!ws)
+    return box_num (0);
+#ifdef _SSL
+  ssl = (SSL *) tcpses_get_ssl (ws->ws_session->dks_session);
+  if (ssl)
+    {
+      int i, verify = SSL_VERIFY_NONE;
+      uptrlong ap;
+      static int s_server_auth_session_id_context;
+      int https_client_verify = BOX_ELEMENTS (args) > 0 ? bif_long_arg (qst, args, 0, me) : HTTPS_VERIFY_OPTIONAL_NO_CA;
+      int https_client_verify_depth = BOX_ELEMENTS (args) > 1 ? bif_long_arg (qst, args, 1, me) : 15;
+      s_server_auth_session_id_context ++;
+
+      if (https_client_verify < 0 || https_client_verify > HTTPS_VERIFY_OPTIONAL_NO_CA)
+	sqlr_new_error ("22023", ".....", "The verify flag must be between 0 and 3");
+      if (https_client_verify_depth <= 0)
+	sqlr_new_error ("22023", ".....", "The verify depth must be greater than zero");
+
+      ap = ((0xff & https_client_verify) << 24) | (0xffffff & https_client_verify_depth);
+
+      if (HTTPS_VERIFY_REQUIRED == https_client_verify)
+	verify |= SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
+      if (HTTPS_VERIFY_OPTIONAL == https_client_verify || HTTPS_VERIFY_OPTIONAL_NO_CA == https_client_verify)
+	verify |= SSL_VERIFY_PEER;
+
+      SSL_set_verify (ssl, verify, (int (*)(int, X509_STORE_CTX *)) https_ssl_verify_callback);
+      SSL_set_app_data (ssl, ap);
+      SSL_set_session_id_context (ssl, (void*)&s_server_auth_session_id_context, sizeof(s_server_auth_session_id_context));
+      i = SSL_renegotiate (ssl);
+      if (i <= 0) sqlr_new_error ("42000", ".....", "SSL_renegotiate failed");
+      i = SSL_do_handshake (ssl);
+      if (i <= 0) sqlr_new_error ("42000", ".....", "SSL_do_handshake failed");
+      ssl->state = SSL_ST_ACCEPT;
+      i = SSL_do_handshake (ssl);
+      if (i <= 0) sqlr_new_error ("42000", ".....", "SSL_do_handshake failed");
+      if (SSL_get_peer_certificate (ssl))
+	return box_num (1);
+    }
+#endif
+  return box_num (0);
+}
+
 FILE *debug_log = NULL;
 
 static caddr_t
@@ -9683,6 +9856,311 @@ bif_http_acl_stats (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   http_acl_stats ();
   trset_end ();
   return NULL;
+}
+
+static caddr_t
+bif_sysacl_compose (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  caddr_t *src = bif_array_of_pointer_arg (qst, args, 0, "sysacl_compose");
+  ptrlong maxperm = bif_long_range_arg (qst, args, 1, "sysacl_compose", 0, 0xff);
+  caddr_t res;
+  uint16 *gids;
+  unsigned char *perms;
+  int src_len, gid_ctr, ctr2, gid_count;
+  src_len = BOX_ELEMENTS (src);
+  if (src_len % 2)
+    sqlr_new_error ("22023", "SA001", "The function sysacl_compose() expects get_keyword - style array of roles and permission bits as its argument)");
+  gid_count = src_len/2;
+  res = dk_alloc_box (gid_count * (sizeof (uint16) + 1) + 1, DV_STRING);
+  gids = (uint16 *)res;
+  perms = (unsigned char *)(res + gid_count * sizeof (uint16));
+  for (gid_ctr = 0; gid_ctr < gid_count; gid_ctr++)
+    {
+      caddr_t src_grp = src [gid_ctr*2];
+      dtp_t src_grp_dtp = DV_TYPE_OF (src_grp);
+      caddr_t src_perm = src [gid_ctr*2 + 1];
+      user_t *grp = NULL;
+      boxint gid;
+      boxint perm;
+      if (DV_LONG_INT == src_grp_dtp)
+        {
+          grp = sec_id_to_user (unbox (src_grp));
+          if (NULL == grp)
+            {
+              dk_free_box (res);
+              sqlr_new_error ("22023", "SA002", "Unknown user or group id %ld", (long)unbox (src_grp));
+            }
+        }
+      else if (DV_STRING == src_grp_dtp)
+        {
+          grp = sec_name_to_user (src_grp);
+          if (NULL == grp)
+            {
+              dk_free_box (res);
+              sqlr_new_error ("22023", "SA003", "Unknown user or group name \"%.200s\"", src_grp);
+            }
+        }
+      else
+        {
+          dk_free_box (res);
+          sqlr_new_error ("22023", "SA004", "User or group should be identified by name or integer id (U_NAME or U_ID from DB.DBA.SYS_USERS)");
+        }
+      gid = grp->usr_id;
+      if (DV_LONG_INT != DV_TYPE_OF (src_perm))
+        {
+          dk_free_box (res);
+          sqlr_new_error ("22023", "SA005", "Permissions for user or group should be integer");
+        }
+      perm = unbox (src_perm);
+      if ((perm < 0) || (perm > maxperm))
+        {
+          dk_free_box (res);
+          sqlr_new_error ("22023", "SA006", "Permission %ld is out of range of valid permisions (from 0 to %ld)", (long)perm, (long)maxperm);
+        }
+      for (ctr2 = 0; ctr2 < gid_ctr; ctr2++)
+        {
+          if (gids[ctr2] != gid)
+            continue;
+          dk_free_box (res);
+          sqlr_new_error ("22023", "SA007", "User or group with id %ld is listed twice, in indicies %ld and %ld of the source vector", (long)gid, (long)(ctr2*2), (long)(gid_ctr*2));
+        }
+      gids[gid_ctr] = gid;
+      perms[gid_ctr] = perm;
+    }
+/* Now bubble sort of the result */
+  for (gid_ctr = gid_count; gid_ctr--; /* no step */)
+    {
+      for (ctr2 = 0; ctr2 < gid_ctr; ctr2++)
+        {
+          uint16 swap_gid;
+          unsigned char swap_perm;
+          if (gids[ctr2] < gids[ctr2+1])
+            continue;
+          swap_gid = gids[ctr2]; gids[ctr2] = gids[ctr2+1]; gids[ctr2+1] = swap_gid;
+          swap_perm = perms[ctr2]; perms[ctr2] = perms[ctr2+1]; perms[ctr2+1] = swap_perm;
+        }
+    }
+  perms[gid_count] = '\0'; /* Trailing zero of the string */
+  return res;
+}
+
+static caddr_t
+bif_sysacl_direct_bits_of_user (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  caddr_t sysacl = bif_string_or_null_arg (qst, args, 0, "sysacl_direct_bits_of_user");
+  user_t *user;
+  oid_t uid;
+  int gids_count;
+  uint16 *gids_tail, *gids_end;
+  if (NULL == sysacl)
+    return box_num (0); /* to stay on safe side */
+  if (1 < BOX_ELEMENTS (args))
+    user = bif_user_t_arg (qst, args, 1, "sysacl_direct_bits_of_user", (USER_SHOULD_EXIST | USER_NOBODY_IS_PERMITTED | USER_SPARQL_IS_PERMITTED), 1);
+  else
+    user = ((query_instance_t *)qst)->qi_client->cli_user;
+  uid = user->usr_id;
+  gids_count = box_length (sysacl) - 1;
+  if (gids_count % (sizeof (uint16) + 1))
+    sqlr_new_error ("22023", "SA008", "Invalid sysacl string is passed to function sysacl_direct_bits_of_user()");
+  gids_count = gids_count / (sizeof (uint16) + 1);
+  gids_tail = (uint16 *)sysacl;
+  gids_end = gids_tail + gids_count;
+  while (gids_tail < gids_end)
+    {
+      if (gids_tail[0] < uid)
+        gids_tail++;
+      else if (gids_tail[0] > uid)
+        break;
+      else
+        return box_num (((unsigned char *)gids_end)[gids_tail - (uint16 *)sysacl]);
+    }
+  return box_num (0);
+}
+
+static caddr_t
+bif_sysacl_all_bits_of_tree (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  caddr_t sysacl = bif_string_or_null_arg (qst, args, 0, "sysacl_all_bits_of_tree");
+  user_t *user;
+  int res = 0, gids_count;
+  uint16 *gids_tail, *gids_end;
+  oid_t *flat_tail, *flat_end;
+  if (NULL == sysacl)
+    return box_num (0); /* to stay on safe side */
+  if (1 < BOX_ELEMENTS (args))
+    user = bif_user_t_arg (qst, args, 1, "sysacl_all_bits_of_tree", (USER_SHOULD_EXIST | USER_NOBODY_IS_PERMITTED | USER_SPARQL_IS_PERMITTED), 1);
+  else
+    user = ((query_instance_t *)qst)->qi_client->cli_user;
+  if (0 == user->usr_flatten_g_ids_len)
+    sec_usr_flatten_g_ids_refill (user);
+  gids_count = box_length (sysacl) - 1;
+  if (gids_count % (sizeof (uint16) + 1))
+    sqlr_new_error ("22023", "SA008", "Invalid sysacl string is passed to function sysacl_all_bits_of_tree()");
+  gids_count = gids_count / (sizeof (uint16) + 1);
+  gids_tail = (uint16 *)sysacl;
+  gids_end = gids_tail + gids_count;
+  flat_tail = user->usr_flatten_g_ids;
+  flat_end = flat_tail + user->usr_flatten_g_ids_len;
+  while ((gids_tail < gids_end) && (flat_tail < flat_end))
+    {
+      if (gids_tail[0] < flat_tail[0])
+        gids_tail++;
+      else if (gids_tail[0] > flat_tail[0])
+        flat_tail++;
+      else
+        {
+          res |= ((unsigned char *)gids_end)[gids_tail - (uint16 *)sysacl];
+          gids_tail++;
+          flat_tail++;
+        }
+    }
+  return box_num (res);
+}
+
+static int
+sec_sysacl_bit1_of_tree (caddr_t sysacl, user_t *user)
+{
+  int gids_count;
+  uint16 *gids_tail, *gids_end;
+  oid_t *flat_tail, *flat_end;
+  if (0 == user->usr_flatten_g_ids_len)
+    sec_usr_flatten_g_ids_refill (user);
+  gids_count = box_length (sysacl) - 1;
+  if (gids_count % (sizeof (uint16) + 1))
+    sqlr_new_error ("22023", "SA008", "Invalid sysacl string is passed to function sysacl_bit1_of_tree()");
+  gids_count = gids_count / (sizeof (uint16) + 1);
+  gids_tail = (uint16 *)sysacl;
+  gids_end = gids_tail + gids_count;
+  flat_tail = user->usr_flatten_g_ids;
+  flat_end = flat_tail + user->usr_flatten_g_ids_len;
+  while ((gids_tail < gids_end) && (flat_tail < flat_end))
+    {
+      if (gids_tail[0] < flat_tail[0])
+        gids_tail++;
+      else if (gids_tail[0] > flat_tail[0])
+        flat_tail++;
+      else
+        {
+          if (0x1 & ((unsigned char *)gids_end)[gids_tail - (uint16 *)sysacl])
+            return 1;
+          gids_tail++;
+          flat_tail++;
+        }
+    }
+  return 0;
+}
+
+static caddr_t
+bif_sysacl_bit1_of_tree (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  caddr_t sysacl = bif_string_or_null_arg (qst, args, 0, "sysacl_bit1_of_tree");
+  user_t *user;
+  if (NULL == sysacl)
+    return box_num (0); /* to stay on safe side */
+  if (1 < BOX_ELEMENTS (args))
+    user = bif_user_t_arg (qst, args, 1, "sysacl_bit1_of_tree", (USER_SHOULD_EXIST | USER_NOBODY_IS_PERMITTED | USER_SPARQL_IS_PERMITTED), 1);
+  else
+    user = ((query_instance_t *)qst)->qi_client->cli_user;
+  return box_num (sec_sysacl_bit1_of_tree (sysacl, user));
+}
+
+void
+bif_sysacl_bit1_of_tree_vec (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args, state_slot_t * ret)
+{
+  data_col_t * dc, *sysacl_arg, *user_arg = NULL;
+  QNCAST (query_instance_t, qi, qst);
+  db_buf_t set_mask = qi->qi_set_mask;
+  int argcount, set, n_sets = qi->qi_n_sets, first_set = 0;
+  state_slot_t * sysacl_ssl, *user_ssl;
+  user_t *curr_user = NULL;
+
+  if (!ret)
+    return;
+  dc = QST_BOX (data_col_t *, qst, ret->ssl_index);
+  argcount = BOX_ELEMENTS (args);
+  if (argcount < 1)
+    sqlr_new_error ("42001", "VEC..", "Not enough arguments for sysacl_bit1_of_tree()");
+  sysacl_ssl = args[0];
+  sysacl_arg = QST_BOX (data_col_t *, qst, sysacl_ssl->ssl_index);
+  if (argcount < 2)
+    curr_user = ((query_instance_t *)qst)->qi_client->cli_user;
+  else
+    {
+      user_ssl = args[1];
+      if (SSL_VEC == user_ssl->ssl_type)
+        user_arg = QST_BOX (data_col_t *, qst, user_ssl->ssl_index);
+      else
+        curr_user = bif_user_t_arg (qst, args, 1, "sysacl_bit1_of_tree", (USER_SHOULD_EXIST | USER_NOBODY_IS_PERMITTED | USER_SPARQL_IS_PERMITTED), 1);
+    }
+  DC_CHECK_LEN (dc, qi->qi_n_sets - 1);
+  SET_LOOP
+    {
+      caddr_t sysacl = NULL, user_name_or_id = NULL;
+      int sysacl_row_no, user_row_no;
+      int bit1;
+      if (SSL_REF == sysacl_ssl->ssl_type)
+        sysacl_row_no = sslr_set_no (qst, sysacl_ssl, set);
+      else
+        sysacl_row_no = set;
+      if (DCT_BOXES & sysacl_arg->dc_type)
+        sysacl = ((caddr_t*)(sysacl_arg->dc_values))[sysacl_row_no];
+      else if (DV_ANY == sysacl_arg->dc_dtp)
+        {
+          db_buf_t ser = ((db_buf_t*)(sysacl_arg->dc_values))[sysacl_row_no];
+          if (DV_DB_NULL == ser[0])
+            { bit1 = 0; goto ans_done; }
+          sysacl = box_deserialize_string ((caddr_t)ser, 0, 0);
+        }
+      else
+        {
+          if (DC_IS_NULL (sysacl_arg, sysacl_row_no))
+            { bit1 = 0; goto ans_done; }
+        }
+      if (DV_STRING != DV_TYPE_OF (sysacl))
+        {
+          if (DV_DB_NULL == DV_TYPE_OF (sysacl))
+            { bit1 = 0; goto ans_done; }
+          sqlr_new_error ("42001", "VEC..", "Wrong dadatype of sysacl");
+        }
+      if (NULL != user_arg)
+        {
+          if (SSL_REF == user_ssl->ssl_type)
+            user_row_no = sslr_set_no (qst, user_ssl, set);
+          else
+            user_row_no = set;
+          if (DCT_BOXES & user_arg->dc_type)
+            user_name_or_id = ((caddr_t*)(user_arg->dc_values))[user_row_no];
+          else if (DV_ANY == user_arg->dc_dtp)
+            {
+              db_buf_t ser = ((db_buf_t*)(user_arg->dc_values))[user_row_no];
+              if (DV_DB_NULL == ser[0])
+                { bit1 = 0; goto ans_done; }
+              user_name_or_id = box_deserialize_string ((caddr_t)ser, 0, 0);
+            }
+          else
+            {
+              if (DC_IS_NULL (user_arg, user_row_no))
+                { bit1 = 0; goto ans_done; }
+              if (DV_LONG_INT == user_arg->dc_dtp)
+                {
+                  int64 i = ((int64*)(user_arg->dc_values))[user_row_no];
+                  curr_user = sec_id_to_user (i);
+                  bit1 = ((NULL == curr_user) ? 0 : sec_sysacl_bit1_of_tree (sysacl, curr_user));
+                  goto ans_done;
+                }
+            }
+          switch (DV_TYPE_OF (user_name_or_id))
+            {
+            case DV_LONG_INT: curr_user = sec_id_to_user (unbox (user_name_or_id)); break;
+            case DV_STRING: curr_user = sec_name_to_user (user_name_or_id); break;
+            default: bit1 = 0; goto ans_done;
+            }
+        }
+      bit1 = sec_sysacl_bit1_of_tree (sysacl, curr_user);
+ans_done:
+      dc_set_long (dc, set, bit1);
+    }
+  END_SET_LOOP;
 }
 
 /*
@@ -10399,17 +10877,16 @@ http_init_part_one ()
   DAV_CHAR_ESCAPE ('&', "%26");
   DAV_CHAR_ESCAPE ('"', "%22");
 
-  bif_define_typed ("http_auth", bif_http_auth, &bt_varchar);
-  bif_define_typed ("http_client_ip", bif_http_client_ip, &bt_varchar);
-  bif_define_typed ("sys_connected_server_address", bif_sys_connected_server_address, &bt_varchar);
+  bif_define_ex ("http_auth", bif_http_auth, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("http_client_ip", bif_http_client_ip, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("sys_connected_server_address", bif_sys_connected_server_address, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
 
   bif_define ("http_rewrite", bif_http_rewrite);
   bif_define ("http_enable_gz", bif_http_enable_gz);
-  bif_define ("http_header", bif_http_header);
-  bif_define ("http_response_header", bif_http_header);
+  bif_define_ex ("http_header", bif_http_header, BMD_ALIAS, "http_response_header", BMD_DONE);
   bif_define ("http_host", bif_http_host);
-  bif_define_typed ("http_header_get", bif_http_header_get, &bt_varchar);
-  bif_define_typed ("http_header_array_get", bif_http_header_array_get, &bt_any);
+  bif_define_ex ("http_header_get", bif_http_header_get, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("http_header_array_get", bif_http_header_array_get, BMD_RET_TYPE, &bt_any, BMD_DONE);
   bif_define ("http", bif_http_result);
   bif_define ("http_xmlelement_start", bif_http_xmlelement_start);
   bif_define ("http_xmlelement_empty", bif_http_xmlelement_empty);
@@ -10422,29 +10899,29 @@ http_init_part_one ()
   bif_define ("http_file", bif_http_file);
   bif_define ("http_proxy", bif_http_proxy);
   bif_define ("http_request_status", bif_http_request_status);
-  bif_define_typed ("http_request_status_get", bif_http_request_status_get, &bt_varchar);
+  bif_define_ex ("http_request_status_get", bif_http_request_status_get, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define_typed (ENC_B64_NAME, bif_encode_base64, &bt_varchar);
   bif_define_typed (DEC_B64_NAME, bif_decode_base64, &bt_varchar);
-  bif_define_typed ("encode_base64url", bif_encode_base64url, &bt_varchar);
-  bif_define_typed ("decode_base64url", bif_decode_base64url, &bt_varchar);
-  bif_define_typed ("http_root", bif_http_root, &bt_varchar);
-  bif_define_typed ("dav_root", bif_dav_root, &bt_varchar);
-  bif_define_typed ("http_path", bif_http_path, &bt_varchar);
+  bif_define_ex ("encode_base64url", bif_encode_base64url, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("decode_base64url", bif_decode_base64url, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("http_root", bif_http_root, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("dav_root", bif_dav_root, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("http_path", bif_http_path, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define ("http_internal_redirect", bif_http_internal_redirect);
 #if 0
-  bif_define_typed ("http_get", bif_http_get, &bt_varchar);
+  bif_define_ex ("http_get", bif_http_get, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
 #endif
-  bif_define_typed ("http_client_cache_enable", bif_http_client_cache_enable, &bt_varchar);
-  bif_define_typed ("string_output", bif_string_output, &bt_varchar);
-  bif_define_typed ("string_output_string", bif_string_output_string, &bt_varchar);
+  bif_define_ex ("http_client_cache_enable", bif_http_client_cache_enable, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("string_output", bif_string_output, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("string_output_string", bif_string_output_string, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define ("string_output_flush", bif_string_output_flush);
   bif_define ("http_output_flush", bif_http_output_flush);
-  bif_define_typed ("server_http_port", bif_server_http_port, &bt_varchar);
-  bif_define_typed ("server_https_port", bif_server_https_port, &bt_varchar);
+  bif_define_ex ("server_http_port", bif_server_http_port, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("server_https_port", bif_server_https_port, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define ("http_xslt", bif_http_xslt);
-  bif_define_typed ("ses_read_line", bif_ses_read_line, &bt_varchar);
-  bif_define_typed ("ses_read", bif_ses_read, &bt_varchar);
-  bif_define_typed ("ses_can_read_char", bif_ses_can_read_char, &bt_integer);
+  bif_define_ex ("ses_read_line", bif_ses_read_line, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("ses_read", bif_ses_read, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("ses_can_read_char", bif_ses_can_read_char, BMD_RET_TYPE, &bt_integer, BMD_DONE);
   bif_define("http_flush", bif_http_flush);
   bif_define ("http_pending_req", bif_http_pending_req);
   bif_define ("http_kill", bif_http_kill);
@@ -10453,41 +10930,48 @@ http_init_part_one ()
   bif_define ("http_unlock", bif_http_unlock);
   bif_define ("http_request_header", bif_http_request_header);
   bif_define ("http_request_header_full", bif_http_request_header_full);
-  bif_define_typed ("http_param", bif_http_param, &bt_any);
-  bif_define_typed ("http_set_params", bif_http_set_params, &bt_any);
-  bif_define_typed ("http_body_read", bif_http_body_read, &bt_any);
-  bif_define_typed ("__http_stream_params", bif_http_stream_params, &bt_any);
-  bif_define_typed ("is_http_ctx", bif_is_http_ctx, &bt_any);
-  bif_define_typed ("is_https_ctx", bif_is_https_ctx, &bt_any);
-  bif_define_typed ("http_is_flushed", bif_http_is_flushed, &bt_any);
-  bif_define_typed ("http_debug_log", bif_http_debug_log, &bt_any);
+  bif_define_ex ("http_param", bif_http_param, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("http_set_params", bif_http_set_params, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("http_body_read", bif_http_body_read, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("__http_stream_params", bif_http_stream_params, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("is_http_ctx", bif_is_http_ctx, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("is_https_ctx", bif_is_https_ctx, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("http_is_flushed", bif_http_is_flushed, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define ("https_renegotiate", bif_https_renegotiate);
+  bif_define_ex ("http_debug_log", bif_http_debug_log, BMD_RET_TYPE, &bt_any, BMD_DONE);
   bif_define("http_login_failed", bif_http_login_failed);
 #ifdef VIRTUAL_DIR
-  bif_define_typed ("http_physical_path", bif_http_physical_path, &bt_varchar);
+  bif_define_ex ("http_physical_path", bif_http_physical_path, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define ("http_map_table", bif_http_map_table);
-  bif_define_typed ("http_map_del", bif_http_map_del, &bt_varchar);
-  bif_define_typed ("http_listen_host", bif_http_listen_host, &bt_varchar);
-  bif_define_typed ("http_map_get", bif_http_map_get, &bt_any);
-  bif_define_typed ("http_request_get", bif_http_request_get, &bt_varchar);
-  bif_define_typed ("http_physical_path_resolve", bif_http_physical_path_resolve, &bt_varchar);
+  bif_define_ex ("http_map_del", bif_http_map_del, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("http_listen_host", bif_http_listen_host, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("http_map_get", bif_http_map_get, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("http_request_get", bif_http_request_get, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("http_physical_path_resolve", bif_http_physical_path_resolve, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
 #endif
-  bif_define_typed ("http_dav_uid", bif_http_dav_uid, &bt_integer);
-  bif_define_typed ("http_admin_gid", bif_http_admin_gid, &bt_integer);
-  bif_define_typed ("http_nobody_uid", bif_http_nobody_uid, &bt_integer);
-  bif_define_typed ("http_nogroup_gid", bif_http_nogroup_gid, &bt_integer);
-  bif_define_typed ("http_auth_verify", bif_http_auth_verify, &bt_any);
-  bif_define_typed ("http_acl_set", bif_http_acl_set, &bt_any);
-  bif_define_typed ("http_acl_get", bif_http_acl_get, &bt_any);
-  bif_define_typed ("http_acl_remove", bif_http_acl_remove, &bt_any);
-  bif_define_typed ("http_acl_stats", bif_http_acl_stats, &bt_any);
+  bif_define_ex ("http_dav_uid", bif_http_dav_uid, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("http_admin_gid", bif_http_admin_gid, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("http_nobody_uid", bif_http_nobody_uid, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("http_nogroup_gid", bif_http_nogroup_gid, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("http_auth_verify", bif_http_auth_verify, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("http_acl_set", bif_http_acl_set, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("http_acl_get", bif_http_acl_get, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("http_acl_remove", bif_http_acl_remove, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("http_acl_stats", bif_http_acl_stats, BMD_RET_TYPE, &bt_any, BMD_DONE);
+
+  bif_define_ex ("sysacl_compose", bif_sysacl_compose, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("sysacl_direct_bits_of_user", bif_sysacl_direct_bits_of_user, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("sysacl_all_bits_of_tree", bif_sysacl_all_bits_of_tree, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("sysacl_bit1_of_tree", bif_sysacl_bit1_of_tree, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_set_vectored (bif_sysacl_bit1_of_tree, bif_sysacl_bit1_of_tree_vec);
 
   bif_define ("http_url_cache_set", bif_http_url_cache_set);
   bif_define ("http_url_cache_get", bif_http_url_cache_get);
   bif_define ("http_url_cache_remove", bif_http_url_cache_remove);
 
-  bif_define_typed ("tcpip_gethostbyname", bif_tcpip_gethostbyname, &bt_varchar);
-  bif_define_typed ("tcpip_gethostbyaddr", bif_tcpip_gethostbyaddr, &bt_varchar);
-  bif_define_typed ("tcpip_local_interfaces", bif_tcpip_local_interfaces, &bt_any);
+  bif_define_ex ("tcpip_gethostbyname", bif_tcpip_gethostbyname, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("tcpip_gethostbyaddr", bif_tcpip_gethostbyaddr, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("tcpip_local_interfaces", bif_tcpip_local_interfaces, BMD_RET_TYPE, &bt_any, BMD_DONE);
 
   bif_define ("http_full_request", bif_http_full_request);
   bif_define ("http_get_string_output", bif_http_get_string_output);
@@ -10502,8 +10986,8 @@ http_init_part_one ()
   bif_define ("http_keep_session", bif_http_keep_session);
   bif_define ("http_recall_session", bif_http_recall_session);
   bif_define ("http_current_charset", bif_http_current_charset);
-  bif_define_typed ("http_status_set", bif_http_status_set, &bt_varchar);
-  bif_define_typed ("http_methods_set", bif_http_methods_set, &bt_any);
+  bif_define_ex ("http_status_set", bif_http_status_set, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("http_methods_set", bif_http_methods_set, BMD_RET_TYPE, &bt_any, BMD_DONE);
   ws_cli_sessions = hash_table_allocate (100);
   ws_cli_mtx = mutex_allocate ();
 #ifdef VIRTUAL_DIR
@@ -10557,6 +11041,8 @@ http_init_part_one ()
   return 1;
 }
 
+dk_set_t ws_threads;
+
 void
 http_threads_allocate (int n_threads)
 {
@@ -10575,8 +11061,58 @@ http_threads_allocate (int n_threads)
 
       ws->ws_thread = thr->dkt_process;
       resource_store (ws_dbcs, (void*) ws);
+      dk_set_push (&ws_threads, ws);
     }
 }
+
+void
+ws_thr_cache_clear ()
+{
+#define WS_MIN_RC 1
+  static void ** wst;
+  ws_connection_t * ws;
+  int i, n = 0;
+  if (!http_threads)
+    return;
+  if (!wst)
+    wst = (void **) malloc (http_threads * sizeof (void *));
+  DO_SET (ws_connection_t *, ws, &ws_threads)
+      ws->ws_thr_cache_clear = 1;
+  END_DO_SET();
+  if (ws_dbcs->rc_fill > WS_MIN_RC)
+    {
+      mutex_enter (ws_dbcs->rc_mtx);
+      n = ws_dbcs->rc_fill;
+      memcpy (wst, ws_dbcs->rc_items, n * sizeof (void*));
+      ws_dbcs->rc_fill = WS_MIN_RC;
+      mutex_leave (ws_dbcs->rc_mtx);
+    }
+  else
+    return;
+  for (i = WS_MIN_RC; i < n; i++)
+    {
+      ws = (ws_connection_t *) wst[i];
+      thr_alloc_cache_clear (ws->ws_thread);
+      ws->ws_thr_cache_clear = 0;
+      resource_store (ws_dbcs, ws);
+    }
+}
+
+size_t dk_alloc_cache_total (void * cache);
+
+size_t
+http_threads_mem_report ()
+{
+  size_t cache_fill = 0;
+  DO_SET (ws_connection_t *, ws, &ws_threads)
+    {
+      cache_fill += dk_alloc_cache_total (ws->ws_thread->thr_alloc_cache);  
+    }
+  END_DO_SET();
+  return cache_fill;
+}
+
+extern int cl_no_init;
 
 int
 http_init_part_two ()
@@ -10590,6 +11126,8 @@ http_init_part_two ()
   dk_session_t *nntp_listen = NULL;
   dk_session_t *ftp_listen = NULL;
 #endif
+  if (cluster_enable && cl_no_init)
+    return 1;
 
   if (lite_mode)
     return 1;
@@ -10619,8 +11157,8 @@ http_init_part_two ()
   ddl_sel_for_effect ("select count (*) from DB.DBA.HTTP_PATH where http_map_table (HP_LPATH, HP_PPATH, HP_HOST, HP_LISTEN_HOST, HP_STORE_AS_DAV, HP_DIR_BROWSEABLE, HP_DEFAULT, HP_SECURITY, HP_REALM, HP_AUTH_FUNC, HP_POSTPROCESS_FUNC, HP_RUN_VSP_AS, HP_RUN_SOAP_AS, HP_PERSIST_SES_VARS, deserialize (HP_SOAP_OPTIONS), deserialize (HP_AUTH_OPTIONS), deserialize (HP_OPTIONS), HP_IS_DEFAULT_HOST)");
 #endif
   ddl_sel_for_effect ("SELECT count (*) FROM DB.DBA.SYS_SOAP_DATATYPES where "
-      "__soap_dt_define(SDT_NAME, xslt ('http://local.virt/soap_sch', xml_tree_doc(xml_tree(SDT_SCH)), vector ('udt_struct', case when isstring(SDT_UDT) then 1 else 0 end)), "
-      "xml_tree_doc(xml_tree(SDT_SCH)), SDT_TYPE, SDT_UDT)");
+      "__soap_dt_define(SDT_NAME, xslt ('http://local.virt/soap_sch', xtree_doc(SDT_SCH), vector ('udt_struct', case when isstring(SDT_UDT) then 1 else 0 end)), "
+      "xtree_doc(SDT_SCH), SDT_TYPE, SDT_UDT)");
 
   ddl_sel_for_effect ("SELECT count (*) FROM DB.DBA.SYS_SOAP_UDT_PUB where "
       "__soap_udt_publish (SUP_HOST, SUP_LHOST, SUP_END_POINT, SUP_CLASS)");
@@ -10662,7 +11200,7 @@ http_init_part_two ()
       SSL_CTX* ssl_ctx = NULL;
       const SSL_METHOD *ssl_meth = NULL;
       ssl_meth = SSLv23_server_method();
-      ssl_ctx = SSL_CTX_new (ssl_meth);
+      ssl_ctx = SSL_CTX_new ((SSL_METHOD *) ssl_meth);
       if (!ssl_ctx)
 	{
 	  cli_ssl_get_error_string (err_buf, sizeof (err_buf));
@@ -10857,7 +11395,7 @@ http_init_part_two ()
   dks_housekeeping_session_count_change (1);
   /* SSL support */
 #ifdef _SSL
-  if (https_port && https_cert && https_key)
+  if (https_port && https_cert && https_key && ssl_listen)
     {
       PrpcCheckIn (ssl_listen);
       dks_housekeeping_session_count_change (1);

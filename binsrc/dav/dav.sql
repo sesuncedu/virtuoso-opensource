@@ -4,7 +4,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2013 OpenLink Software
+--  Copyright (C) 1998-2014 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -1401,7 +1401,7 @@ create procedure WS.WS.MKCOL (in path varchar, inout params varchar, in lines va
   {
     commit work;
     http_request_status ('HTTP/1.1 201 Created');
-    http_header('Link: <>;rel=<http://www.w3.org/ns/ldp/Container>\r\n');
+    http_header('Link: <http://www.w3.org/ns/ldp#Container>; rel="type"\r\n');
   }
   else if (rc = -24)
   {
@@ -1764,7 +1764,7 @@ create procedure WS.WS.PUT (in path varchar, inout params varchar, in lines varc
     {
       commit work;
       http_request_status ('HTTP/1.1 201 Created');
-      http_header (sprintf('Content-Type: %s\r\nLink: <>;rel=<http://www.w3.org/ns/ldp/Resource>\r\n', content_type));
+    http_header (sprintf('Content-Type: %s\r\nLink: <http://www.w3.org/ns/ldp#Resource>; rel="type"\r\n', content_type));
     if (content_type = 'application/sparql-query')
 	http_header ('MS-Author-Via: SPARQL\r\n');
       else
@@ -2474,7 +2474,7 @@ again:
     }
 
     _accept := HTTP_RDF_GET_ACCEPT_BY_Q (http_request_header_full (lines, 'Accept', '*/*'));
-    if (isinteger (_res_id) and (_accept = 'text/html') and (cont_type = 'text/turtle') and not isnull (DB.DBA.VAD_CHECK_VERSION ('fct')))
+	  if (WS.WS.TTL_REDIRECT_ENABLED () and isinteger (_res_id) and (_accept = 'text/html') and (cont_type = 'text/turtle') and not isnull (DB.DBA.VAD_CHECK_VERSION ('fct')))
     {
       http_rewrite ();
       http_status_set (303);
@@ -3090,7 +3090,7 @@ create procedure WS.WS.TTL_QUERY_POST (
   	  ses := http_body_read (1);
 	 }
     }
-  def_gr := WS.WS.DAV_HOST () || path;
+  def_gr := WS.WS.DAV_IRI (path);
   if (exists (select 1 from DB.DBA.SYS_USERS where U_NAME = uname and U_SQL_ENABLE = 1))
     set_user_id (uname);
 
@@ -3098,6 +3098,12 @@ create procedure WS.WS.TTL_QUERY_POST (
   DB.DBA.TTLP (ses, def_gr, def_gr);
 
   return 0;
+}
+;
+
+create procedure WS.WS.TTL_REDIRECT_ENABLED ()
+{
+  return case when registry_get ('__WebDAV_ttl__') = 'yes' then 1 else 0 end;
 }
 ;
 

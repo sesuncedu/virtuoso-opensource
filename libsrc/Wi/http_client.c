@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -1179,8 +1179,8 @@ http_cli_parse_resp_hdr (http_cli_ctx * ctx, char* hdr, int num_chars)
 HC_RET
 http_cli_read_resp_hdrs (http_cli_ctx * ctx)
 {
-  char read_buf[4096];
-  char resp_hdr_tmp[4096];
+  char read_buf[DKSES_IN_BUFFER_LENGTH];
+  char resp_hdr_tmp[DKSES_IN_BUFFER_LENGTH];
   int resp_hdr_tmp_fill;
   int num_chars;
 
@@ -1778,6 +1778,7 @@ if (e - s < sizeof (b)) \
   { \
     strncpy (b, s, e - s); \
     *(b + (e - s)) = 0; \
+    if (p) dk_free_box (p); \
     p = box_string (b); \
   } \
 else \
@@ -2318,6 +2319,8 @@ http_cli_init_std_redir (http_cli_ctx* ctx, int r)
    13. insecure option
    14. ret argument index in args ssls
    15. how many redirects to follow
+In bif_http_client_impl, arguments qst, err_ret, args and me are traditional
+All arguments except the URL can be db NULLs in bif call, NULL pointers in _impl call.
 */
 
 caddr_t
@@ -2786,7 +2789,7 @@ void
 bif_http_client_init (void)
 {
   init_acl_set (http_cli_proxy_except, &http_cli_proxy_except_set);
-  bif_define_typed ("http_client_internal", bif_http_client, &bt_varchar);
-  bif_define_typed ("http_pipeline", bif_http_pipeline, &bt_any);
-  bif_define_typed ("http_get", bif_http_get, &bt_varchar);
+  bif_define_ex ("http_client_internal", bif_http_client, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("http_pipeline", bif_http_pipeline, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("http_get", bif_http_get, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
 }

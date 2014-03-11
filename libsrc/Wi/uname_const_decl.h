@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -121,6 +121,7 @@ extern caddr_t uname_virtrdf_ns_uri_DefaultQuadMap;
 extern caddr_t uname_virtrdf_ns_uri_DefaultQuadStorage;
 extern caddr_t uname_virtrdf_ns_uri_DefaultServiceStorage;
 extern caddr_t uname_virtrdf_ns_uri_DefaultSparul11Target;
+extern caddr_t uname_virtrdf_ns_uri_Geometry;
 extern caddr_t uname_virtrdf_ns_uri_PrivateGraphs;
 extern caddr_t uname_virtrdf_ns_uri_QuadMap;
 extern caddr_t uname_virtrdf_ns_uri_QuadMapFormat;

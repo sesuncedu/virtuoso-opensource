@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -604,7 +604,7 @@ sqlc_ensure_primary_key (dk_set_t elements)
       t_list (5,
 	  INDEX_DEF, NULL, NULL,
 	  t_list (1, t_box_string ("_IDN")),
-	  NULL));
+	      t_list_to_array (sqlp_index_default_opts (NULL))));
   t_set_push (&elements, NULL);
   t_set_push (&elements,
       t_list (2,
@@ -1474,11 +1474,7 @@ sqlp_complete_fun_ref (ST * tree)
     {
       /* count of non-* */
       ST * arg = tree->_.fn_ref.fn_arg; /* not AMMSC_USER so it's argument, not a vector of them */
-      ST * exp = (ST*) t_list (2, SEARCHED_CASE,
-			     t_list (4, t_list (4, BOP_NULL, arg, NULL, NULL),
-				   box_num (0),
-				   t_list (2, QUOTE, NULL),
-				   box_num (1)));
+      ST * exp = (ST*) t_list (3, CALL_STMT, t_sqlp_box_id_upcase  ("isnotnull"), t_list (1, arg));
       tree->_.fn_ref.fn_arg = exp;
       tree->_.fn_ref.fn_code = AMMSC_COUNTSUM;
     }
@@ -1892,7 +1888,8 @@ sqlp_contains_opts (ST * tree)
 		  || 0 == stricmp (name, "attr_ranges")
 		  || 0 == stricmp (name, "score")
 		  || 0 == stricmp (name, "score_limit")
-		  || 0 == stricmp (name, "end_id"))
+		  || 0 == stricmp (name, "end_id")
+		  || 0 == stricmp (name, "ext_fti") )
 		{
 /*		  dk_free_tree ((caddr_t) arg);*/
 		  tree->_.call.params[inx] = (ST *) t_box_string (name);
@@ -1991,6 +1988,8 @@ sqlp_xpath_or_xquery_eval (ST * funcall_tree)
       char buf[30];
       ST **old_params = funcall_tree->_.call.params;
       size_t old_argcount = BOX_ELEMENTS (old_params);
+  if (enable_vec)
+    return; /* FIXME: the _w_cache  do not run vectored, hack with ssl should be made vectored  */
       if (2 > old_argcount)
     yyerror ("Functions xpath_eval() and xquery_eval() require at least two arguments");
       if (DV_STRING == DV_TYPE_OF(old_params[0]))
@@ -2116,6 +2115,7 @@ sqlp_xpath_funcall_or_apply (ST * funcall_tree)
             }
         }
       xqr = xqr_stub_for_funcall (metas, fn_argcount);
+      xqr->xqr_key = box_copy (old_params[0]);
       /*t_trash_push (xqr);*/
       old_params[0] = (ST *)xqr;
     }
@@ -2277,6 +2277,8 @@ not_a_constant_pure: ;
 }
 
 
+extern caddr_t uname_one_of_these;
+
 ST *
 sqlp_in_exp (ST * left, dk_set_t  right, int is_not)
 {
@@ -2316,7 +2318,7 @@ sqlp_in_exp (ST * left, dk_set_t  right, int is_not)
   else
     {
       ST * res =
-	t_listst (3, CALL_STMT, t_sqlp_box_id_upcase ("one_of_these"),
+	t_listst (3, CALL_STMT, uname_one_of_these,
 		t_list_to_array (t_CONS (left, right)));
       if (is_not)
 	return (t_listst (3, BOP_EQ, t_box_num (0), res));
@@ -2626,3 +2628,49 @@ sqlp_is_num_lit (caddr_t x)
     default: return 0;
     }
 }
+
+
+char *
+sqlp_default_cluster ()
+{
+  return "__ALL";
+}
+
+
+dk_set_t
+cl_all_host_group_list ()
+{
+  dk_set_t res = NULL;
+  int inx;
+  for (inx = local_cll.cll_max_host; inx > 0; inx--)
+    {
+      if (cl_id_to_host (inx))
+	{
+	  char name[20];
+	  snprintf (name, sizeof (name), "Host%d", inx);
+	  dk_set_push (&res, t_list (3, NULL, t_list (1, t_sym_string (name)), NULL));
+	}
+    }
+  return res;
+}
+
+int enable_col_by_default  = 0;
+
+dk_set_t
+sqlp_index_default_opts(dk_set_t opts)
+{
+  if (enable_col_by_default)
+    {
+      DO_SET (caddr_t, opt, &opts)
+	{
+	  if (0 == stricmp (opt,  "not_column")
+	      || 0 == stricmp (opt,  "column")
+	      || 0 == stricmp (opt,  "bitmap"))
+	    return opts;
+	}
+      END_DO_SET();
+      return t_cons (t_box_string ("column"), opts);
+    }
+  return opts;
+}
+

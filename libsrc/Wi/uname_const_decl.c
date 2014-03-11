@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -98,6 +98,7 @@ caddr_t uname_virtrdf_ns_uri_DefaultQuadMap;
 caddr_t uname_virtrdf_ns_uri_DefaultQuadStorage;
 caddr_t uname_virtrdf_ns_uri_DefaultServiceStorage;
 caddr_t uname_virtrdf_ns_uri_DefaultSparul11Target;
+caddr_t uname_virtrdf_ns_uri_Geometry;
 caddr_t uname_virtrdf_ns_uri_PrivateGraphs;
 caddr_t uname_virtrdf_ns_uri_QuadMap;
 caddr_t uname_virtrdf_ns_uri_QuadMapFormat;
@@ -246,6 +247,10 @@ static uname_const_decl_t uname_const_decls[] = {
   { &uname_bif_c_contains			, "bif:contains"		},
   { &uname_bif_c_spatial_contains		, "bif:spatial_contains"	},
   { &uname_bif_c_spatial_intersects		, "bif:spatial_intersects"	},
+  { &uname_bif_c_st_contains			, "bif:st_contains"		},
+  { &uname_bif_c_st_intersects			, "bif:st_intersects"		},
+  { &uname_bif_c_st_may_intersect		, "bif:st_may_intersect"	},
+  { &uname_bif_c_st_within			, "bif:st_within"		},
   { &uname_bif_c_xcontains			, "bif:xcontains"		},
   { &uname_bif_c_xpath_contains			, "bif:xpath_contains"		},
   { &uname_bif_c_xquery_contains		, "bif:xquery_contains"		},
@@ -286,6 +291,7 @@ static uname_const_decl_t uname_const_decls[] = {
   { &uname_virtrdf_ns_uri_DefaultQuadStorage	, VIRTRDF_NS_URI "DefaultQuadStorage"	},
   { &uname_virtrdf_ns_uri_DefaultServiceStorage	, VIRTRDF_NS_URI "DefaultServiceStorage"	},
   { &uname_virtrdf_ns_uri_DefaultSparul11Target	, VIRTRDF_NS_URI "DefaultSparul11Target"	},
+  { &uname_virtrdf_ns_uri_Geometry		, VIRTRDF_NS_URI "Geometry"	},
   { &uname_virtrdf_ns_uri_PrivateGraphs		, VIRTRDF_NS_URI "PrivateGraphs"	},
   { &uname_virtrdf_ns_uri_QuadMap		, VIRTRDF_NS_URI "QuadMap"	},
   { &uname_virtrdf_ns_uri_QuadMapFormat		, VIRTRDF_NS_URI "QuadMapFormat"	},

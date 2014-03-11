@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -31,7 +31,7 @@
 #include "sqlnode.h"
 
 typedef void (*bif_type_func_t) (state_slot_t ** args, long *dtp, long *prec,
-    long *scale, caddr_t *collation);
+				 long *scale, caddr_t *collation, long * non_null);
 
 typedef struct
   {
@@ -39,6 +39,8 @@ typedef struct
     long		bt_dtp;
     long		bt_prec;
     long		bt_scale;
+    long		bt_non_null;
+    const char *	bt_sql_dml_name;
   } bif_type_t;
 
 #define is_some_sort_of_an_integer(T)\
@@ -60,6 +62,7 @@ typedef struct sql_tree_s *bif_sql_optimizer_t (sql_comp_ptr_t sqlc, int bif_opt
 typedef struct spar_tree_s *bif_sparql_optimizer_t (sparp_ptr_t sparp, int bif_opt_opcode, struct spar_tree_s *tree, bif_metadata_ptr_t bmd, void *more);
 
 #define BMD_DONE			12053	/*!< The value in arglist of bif_define_ex that indicates the end of arglist */
+#define BMD_ALIAS			1	/*!< An additional (alias) name of a function */
 #define BMD_VECTOR_IMPL			2	/*!< Flags that the BIF has a vectored variant, the pointer to the vectored implementation is the value */
 #define BMD_SQL_OPTIMIZER_IMPL		3	/*!< Flags that the BIF has a special optimizer, the pointer to the function is the value */
 #define BMD_SPARQL_OPTIMIZER_IMPL	4	/*!< Flags that the BIF has a special optimizer, the pointer to the function is the value */
@@ -71,9 +74,11 @@ typedef struct spar_tree_s *bif_sparql_optimizer_t (sparp_ptr_t sparp, int bif_o
 #define BMD_IS_PURE			10	/*!< Flags that the function is pure, no associated value */
 #define BMD_IS_DBA_ONLY			11	/*!< Flags that the function is for DBA only, no associated value */
 #define BMD_USES_INDEX			12	/*!< Flags that the function uses at least some index, no associated value */
-#define BMD_NO_CLUSTER			13	/*!< Flags that the function is not cluster friendly and can not be relocated from node to node without the change in semantics, no associated value */
-#define BMD_SPARQL_ONLY			14	/*!< Flag for a special name that looks like a function name in SPARQL front-end, but not a BIF in the generated SQL. The value should be the last one because it does not correspond to any field of \c bif_metadata_t */
-#define COUNTOF__BMD_OPTIONs		15
+#define BMD_SPARQL_ONLY			13	/*!< Flag for a special name that looks like a function name in SPARQL front-end, but not a BIF in the generated SQL. The value should be the last one because it does not correspond to any field of \c bif_metadata_t */
+#define BMD_NO_CLUSTER			14	/*!< Flags that the function is not cluster friendly and can not be relocated from node to node without the change in semantics, no associated value */
+#define BMD_OUT_OF_PARTITION		15	/*!< Flags that the function makes a cross partition cluster operation */
+#define BMD_NEED_ENLIST			16	/*!< Flags that the query should get \c qr_need_enlist set to 1 if it contains any call of this function */
+#define COUNTOF__BMD_OPTIONs		17
 
 /*! \brief Metadata about single BIF or similar object.
 These metadata are created once, remains constant after the creation and never deleted.
@@ -82,18 +87,19 @@ If a metadata record describes BIF that was loaeded from a plugin and later unlo
 typedef struct bif_metadata_s {
   const char *			bmd_name;
   bif_t				bmd_main_impl;
-  bif_t				bmd_vector_impl;		/*!<offset 2	, see \c BMD_VECTOR_IMPL */
-  bif_sql_optimizer_t *		bmd_sql_optimizer_impl;		/*!<offset 3	, see \c BMD_SQL_OPTIMIZER_IMPL */
-  bif_sparql_optimizer_t *	bmd_sparql_optimizer_impl;	/*!<offset 4	, see \c BMD_SPARQL_OPTIMIZER_IMPL */
-  bif_type_t *			bmd_ret_type;			/*!<offset 5	, see \c BMD_RET_TYPE */
-  ptrlong			bmd_min_argcount;		/*!<offset 6	, see \c BMD_MIN_ARGCOUNT */
-  ptrlong			bmd_argcount_inc;		/*!<offset 7	, see \c BMD_ARGCOUNT_INC */
-  ptrlong			bmd_max_argcount;		/*!<offset 8	, see \c BMD_MAX_ARGCOUNT */
-  ptrlong			bmd_is_aggregate;		/*!<offset 9	, see \c BMD_IS_AGGREGATE */
-  ptrlong			bmd_is_pure;			/*!<offset 10	, see \c BMD_IS_PURE */
-  ptrlong			bmd_is_dba_only;		/*!<offset 11	, see \c BMD_IS_DBA_ONLY */
-  ptrlong			bmd_uses_index;			/*!<offset 12	, see \c BMD_USES_INDEX */
-  ptrlong			bmd_no_cluster;			/*!<offset 13	, see \c BMD_NO_CLUSTER */
+  dk_set_t			bmd_aliases;			/*!< see \c BMD_ALIAS */
+  bif_vec_t			bmd_vector_impl;		/*!< see \c BMD_VECTOR_IMPL */
+  bif_sql_optimizer_t *		bmd_sql_optimizer_impl;		/*!< see \c BMD_SQL_OPTIMIZER_IMPL */
+  bif_sparql_optimizer_t *	bmd_sparql_optimizer_impl;	/*!< see \c BMD_SPARQL_OPTIMIZER_IMPL */
+  bif_type_t *			bmd_ret_type;			/*!< see \c BMD_RET_TYPE */
+  ptrlong			bmd_min_argcount;		/*!< see \c BMD_MIN_ARGCOUNT */
+  ptrlong			bmd_argcount_inc;		/*!< see \c BMD_ARGCOUNT_INC */
+  ptrlong			bmd_max_argcount;		/*!< see \c BMD_MAX_ARGCOUNT */
+  ptrlong			bmd_is_aggregate;		/*!< see \c BMD_IS_AGGREGATE */
+  ptrlong			bmd_is_pure;			/*!< see \c BMD_IS_PURE */
+  ptrlong			bmd_is_dba_only;		/*!< see \c BMD_IS_DBA_ONLY */
+  ptrlong			bmd_uses_index;			/*!< see \c BMD_USES_INDEX */
+  ptrlong			bmd_no_cluster;			/*!< see \c BMD_NO_CLUSTER, \c BMD_OUT_OF_PARTITION and \c BMD_NEED_ENLIST */
 } bif_metadata_t;
 
 extern id_hash_t *name_to_bif_metadata_idhash;			/*!< Metadata of all known BIFs (except \c BMD_SPARQL_ONLY records); results of sqlp_box_id_upcase() as keys, pointers to \c bif_metadata_t as values */
@@ -111,6 +117,8 @@ EXE_EXPORT (void, bif_set_uses_index, (bif_t bif));
 EXE_EXPORT (bif_t, bif_find, (const char *name));
 int bif_is_aggregate (bif_t bif);
 void bif_set_is_aggregate (bif_t  bif);
+bif_vec_t bif_vectored (bif_t bif);
+void bif_set_vectored (bif_t bif, bif_vec_t vectored);
 
 EXE_EXPORT (caddr_t, sqlr_run_bif_in_sandbox, (bif_metadata_t *bmd, caddr_t *args, caddr_t *err_ret));
 
@@ -120,6 +128,7 @@ void bif_type_set (bif_type_t *bt, state_slot_t *ret, state_slot_t **params);
 #define bif_arg_nochecks(qst,args,nth) QST_GET ((qst), (args)[(nth)])
 EXE_EXPORT (caddr_t, bif_arg, (caddr_t * qst, state_slot_t ** args, int nth, const char * func));
 EXE_EXPORT (caddr_t, bif_arg_unrdf, (caddr_t * qst, state_slot_t ** args, int nth, const char *func));
+EXE_EXPORT (caddr_t, bif_arg_unrdf_ext, (caddr_t * qst, state_slot_t ** args, int nth, const char *func, caddr_t *ret_orig));
 EXE_EXPORT (caddr_t, bif_string_arg, (caddr_t * qst, state_slot_t ** args, int nth, const char * func));
 EXE_EXPORT (caddr_t, bif_string_or_uname_arg, (caddr_t * qst, state_slot_t ** args, int nth, const char * func));
 EXE_EXPORT (caddr_t, bif_string_or_wide_or_uname_arg, (caddr_t * qst, state_slot_t ** args, int nth, const char * func));
@@ -130,6 +139,7 @@ EXE_EXPORT (struct xml_tree_ent_s *, bif_tree_ent_arg, (caddr_t * qst, state_slo
 EXE_EXPORT (caddr_t, bif_bin_arg, (caddr_t * qst, state_slot_t ** args, int nth, const char *func));
 EXE_EXPORT (caddr_t, bif_string_or_null_arg, (caddr_t * qst, state_slot_t ** args, int nth, const char * func));
 EXE_EXPORT (caddr_t, bif_string_or_uname_or_iri_id_arg, (caddr_t * qst, state_slot_t ** args, int nth, const char *func));
+EXE_EXPORT (data_col_t *, bif_dc_arg, (caddr_t * qst, state_slot_t ** args, int nth, char * name));
 EXE_EXPORT (caddr_t, bif_string_or_wide_or_null_arg, (caddr_t * qst, state_slot_t ** args, int nth, const char * func));
 EXE_EXPORT (caddr_t, bif_string_or_uname_or_wide_or_null_arg, (caddr_t * qst, state_slot_t ** args, int nth, const char * func));
 EXE_EXPORT (caddr_t, bif_string_or_wide_or_null_or_strses_arg, (caddr_t * qst, state_slot_t ** args, int nth, const char * func));
@@ -165,7 +175,7 @@ EXE_EXPORT (caddr_t, bif_result_names, (caddr_t * qst, caddr_t * err_ret, state_
 
 caddr_t bif_result_names_impl (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args, int is_select);
 
-extern caddr_t print_object_to_new_string (caddr_t xx, const char *fun_name, caddr_t * err_ret);
+extern caddr_t print_object_to_new_string (caddr_t xx, const char *fun_name, caddr_t * err_ret, int flags);
 
 const char *dv_type_title (int type);
 
@@ -179,7 +189,8 @@ EXE_EXPORT (caddr_t *, bif_array_of_pointer_arg, (caddr_t * qst, state_slot_t **
 extern bif_type_t bt_varchar;
 extern bif_type_t bt_wvarchar;
 extern bif_type_t bt_any;
-#define bt_any_box bt_any
+extern bif_type_t bt_any_box;
+extern bif_type_t bt_iri_id;
 extern bif_type_t bt_integer;
 extern bif_type_t bt_double;
 extern bif_type_t bt_float;
@@ -292,6 +303,7 @@ extern caddr_t file_native_name_from_iri_path_nchars (const char *iri_path, size
 caddr_t get_ssl_error_text (char *buf, int len);
 
 caddr_t regexp_match_01 (const char *pattern, const char *str, int c_opts);
+caddr_t regexp_match_01_const (const char* pattern, const char* str, int c_opts, void ** compiled_ret);
 caddr_t regexp_split_match (const char* pattern, const char* str, int* next, int c_opts);
 int regexp_make_opts (const char* mode);
 int regexp_split_parse (const char* pattern, const char* str, int* offvect, int offvect_sz, int c_opts);
@@ -328,7 +340,11 @@ long raw_length (caddr_t arg);
 }
 
 int bif_is_no_cluster (bif_t bif); /* cannot be execd except where invoked */
-extern void bif_set_no_cluster (const char * n);
+int bif_need_enlist (bif_t bif);
+
+#define BIF_NO_CLUSTER		0x1	/*!< bif is not shippable, e.g., depends on local thread context */
+#define BIF_OUT_OF_PARTITION	0x2	/*!< bif makes a cross partition cluster op, can ship only if recursive qf enabled */
+#define BIF_ENLIST		0x4	/*!< require and propagate enlist, bif makes a transactional write */ 
 
 typedef struct
 {
@@ -340,5 +356,21 @@ typedef struct
 void strses_write_out_gz (dk_session_t *ses, dk_session_t *out, strses_chunked_out_t * outd);
 int gz_stream_free (void *s);
 extern int32 cl_non_logged_write_mode;
+caddr_t bif_rollback (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args);
 
+int iso_string_to_code (char * i);
+
+
+typedef struct bif_exec_stat_s
+{
+  uint32	exs_start;
+  client_connection_t * 	exs_cli;
+  caddr_t 	exs_text;
+} bif_exec_stat_t;
+
+extern dk_mutex_t bif_exec_pending_mtx;
+extern id_hash_t * bif_exec_pending;
+extern int c_no_dbg_print;
+
+#define BIF_NOT_VECTORED ((caddr_t)-2) /* err ret of a vectored bif for reverting to non-vectored form */
 #endif /* _SQLBIF_H */

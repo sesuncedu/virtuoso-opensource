@@ -6,7 +6,7 @@
  -  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  -  project.
  -
- -  Copyright (C) 1998-2013 OpenLink Software
+ -  Copyright (C) 1998-2014 OpenLink Software
  -
  -  This project is free software; you can redistribute it and/or modify it
  -  under the terms of the GNU General Public License as published by the
@@ -225,7 +225,7 @@
 			    control.vc_enabled := 0;
 
 			   declare pkg any;
-			   pkg := (control.vc_parent as vspx_row_template).te_rowset[0]; 
+			   pkg := lower ((control.vc_parent as vspx_row_template).te_rowset[0]);
 			   if (exists (select 1 from WS.WS.SYS_DAV_RES where RES_FULL_PATH = '/DAV/VAD/conductor/vad_' || pkg || '_config.vspx'))
 			     {
 			       control.vc_enabled := 1;

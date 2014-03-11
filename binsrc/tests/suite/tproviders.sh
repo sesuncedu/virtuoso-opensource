@@ -1,11 +1,11 @@
 #!/bin/sh
 #
-#  $Id$
+#  $Id: tproviders.sh,v 1.4.2.2.4.3 2013/01/02 16:15:18 source Exp $
 #
 #  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 #  project.
 #
-#  Copyright (C) 1998-2013 OpenLink Software
+#  Copyright (C) 1998-2014 OpenLink Software
 #
 #  This project is free software; you can redistribute it and/or modify it
 #  under the terms of the GNU General Public License as published by the
@@ -23,7 +23,7 @@
 
 LOGFILE=`pwd`/tproviders.output
 export LOGFILE
-. ./test_fn.sh
+. $VIRTUOSO_TEST/testlib.sh
  
 CURRDIR=`pwd`
 JENADIR="../../jena"
@@ -58,7 +58,7 @@ START_SERVER $PORT 1000
 #
 cd $JENADIR
 
-RUN make
+RUN $MAKE
 if test $STATUS -ne 0
 then
     LOG "***FAILED: Jena compile"
@@ -66,7 +66,7 @@ else
     LOG "PASSED: Jena compile"
 fi
 
-RUN make run-tests
+RUN $MAKE run-tests
 if test $STATUS -ne 0
 then
     LOG "***FAILED: Jena provider JUnit tests"
@@ -82,7 +82,7 @@ cd $CURRDIR
 #
 cd $SESAME2DIR
 
-RUN make
+RUN $MAKE
 if test $STATUS -ne 0
 then
     LOG "***FAILED: Sesame2 compile"
@@ -90,7 +90,7 @@ else
     LOG "PASSED: Sesame2 compile"
 fi
 
-RUN make run-tests
+RUN $MAKE run-tests
 if test $STATUS -ne 0
 then
     LOG "***FAILED: Sesame2 suite"

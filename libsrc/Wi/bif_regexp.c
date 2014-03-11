@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -67,7 +67,8 @@ pcre_info_t;
 safe_hash_t regexp_codes;
 
 
-static caddr_t get_regexp_code (safe_hash_t * rx_codes, const char *pattern,
+static
+caddr_t get_regexp_code (safe_hash_t * rx_codes, const char *pattern,
     pcre_info_t * pcre_info, int options);
 
 #define SET_INVALID_ARG(fmt) \
@@ -508,7 +509,6 @@ done:
  *			index of matched substrings end
  *		2...n pairs - indexes of begins and ends of matched substrings of first substring.
  *
- * Returns if not a list:
  */
 
 static caddr_t
@@ -858,8 +858,8 @@ err_at_replace:
 int32 c_match_limit_recursion = 150;
 
 static caddr_t
-get_regexp_code (safe_hash_t * rx_codes, const char *pattern,
-    pcre_info_t * pcre_info, int options)
+get_regexp_code_1 (safe_hash_t * rx_codes, const char *pattern,
+		 pcre_info_t * pcre_info, int options, void**ret)
 {
   const char *error = 0;
   int erroff;
@@ -893,6 +893,7 @@ get_regexp_code (safe_hash_t * rx_codes, const char *pattern,
 	      id_hash_set (rx_codes->hash, (char *) &pattern_box, (char *) &opts_hash);
 	    }
 	  pcre_info_ref = (pcre_info_t *) dk_alloc (sizeof (pcre_info_t));
+	  *ret = pcre_info_ref;
 	  *pcre_info_ref = *pcre_info;
 	  sethash ((void *) (unsigned ptrlong) (options + 1), opts_hash, pcre_info_ref);
 	}
@@ -914,6 +915,17 @@ get_regexp_code (safe_hash_t * rx_codes, const char *pattern,
   return NULL;
 }
 
+
+caddr_t
+get_regexp_code (safe_hash_t * rx_codes, const char *pattern,
+		 pcre_info_t * pcre_info, int options)
+{
+  void * ign = NULL;
+  return get_regexp_code_1 (rx_codes,  pattern,
+			  pcre_info, options, &ign);
+}
+
+
 static caddr_t
 bif_regexp_version (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
@@ -927,13 +939,13 @@ bif_regexp_init ()
   regexp_codes.hash = id_hash_allocate (NHASHITEMS, sizeof (caddr_t), sizeof (pcre_info_t),
       strhash, strhashcmp);
 
-  bif_define_typed ("regexp_match", bif_regexp_match, &bt_varchar);
-  bif_define_typed ("rdf_regex_impl", bif_rdf_regex_impl, &bt_varchar);
-  bif_define_typed ("regexp_substr", bif_regexp_substr, &bt_varchar);
-  bif_define_typed ("regexp_parse", bif_regexp_parse, &bt_any);
-  bif_define_typed ("regexp_parse_list", bif_regexp_parse_list, &bt_any);
-  bif_define_typed ("regexp_replace_hits_with_template", bif_regexp_replace_hits_with_template, &bt_varchar);
-  bif_define_typed ("regexp_version", bif_regexp_version, &bt_varchar);
+  bif_define_ex ("regexp_match", bif_regexp_match, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("rdf_regex_impl", bif_rdf_regex_impl, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("regexp_substr", bif_regexp_substr, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("regexp_parse", bif_regexp_parse, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("regexp_parse_list", bif_regexp_parse_list, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("regexp_replace_hits_with_template", bif_regexp_replace_hits_with_template, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("regexp_version", bif_regexp_version, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
 }
 
 
@@ -967,6 +979,40 @@ regexp_match_01 (const char* pattern, const char* str, int c_opts)
     }
   return NULL;
 }
+
+
+caddr_t
+regexp_match_01_const (const char* pattern, const char* str, int c_opts, void** ret)
+{
+  pcre_info_t cd_info;
+  int r_opts = 0;
+  caddr_t err = NULL;
+  if (!*ret)
+    {
+      err = get_regexp_code_1 (&regexp_codes, pattern, &cd_info, c_opts, ret);
+      if (err)
+	sqlr_resignal (err);
+    }
+  cd_info = **(pcre_info_t **)ret;
+  if (cd_info.code)
+    {
+      int offvect[NOFFSETS];
+      int result;
+      int str_len = (int) strlen (str);
+      memset (offvect, -1, NOFFSETS * sizeof (int));
+      result = pcre_exec (cd_info.code, cd_info.code_x, str, str_len, 0, r_opts,
+	  offvect, NOFFSETS);
+      if (result != -1)
+	{
+	  caddr_t ret_str = dk_alloc_box (offvect[1] - offvect[0] + 1, DV_SHORT_STRING);
+	  strncpy (ret_str, str + offvect[0], offvect[1] - offvect[0]);
+	  ret_str[offvect[1] - offvect[0]] = 0;
+	  return ret_str;
+	}
+    }
+  return NULL;
+}
+
 
 struct regexp_opts_s {
   char	mc;

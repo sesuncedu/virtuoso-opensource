@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -41,6 +41,8 @@
 
 
 
+int enable_rts_qp = 1;
+
 void sqlg_dt_text (sqlo_t * so, df_elt_t * dt_dfe, remote_table_source_t * top_rts,
     char * text, size_t tlen, int * fill);
 
@@ -64,7 +66,7 @@ sqlo_depends_on_locus (df_elt_t * dfe, locus_t * loc)
  */
 
 int
-sqlo_rds_support_params_in_select (df_elt_t *dfe, locus_t *loc)
+sqlo_rds_support_params_in_select (df_elt_t * dfe, locus_t * loc)
 {
   return 1;
 }
@@ -174,6 +176,7 @@ sqlo_dfe_preferred_locus (sqlo_t * so, df_elt_t * super, df_elt_t * dfe)
 
 #define SQLO_VDB_SAVE
 #define SQLO_VDB_RESTORE
+
 
 
 void

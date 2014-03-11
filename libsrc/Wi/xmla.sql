@@ -4,7 +4,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2013 OpenLink Software
+--  Copyright (C) 1998-2014 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -895,7 +895,7 @@ create method xmla_dbschema_columns () for xmla_discover
 	 KEY_IS_MAIN = 1 and
 	 KEY_MIGRATE_TO is null and
 	 KP_KEY_ID = KEY_ID and
-	 COL_ID = KP_COL order by KEY_TABLE, 7'
+	 COL_ID = KP_COL order by KEY_TABLE, 7 option (order)'
        , null, null,
       vector (cat, sch, tb, col), 0, mdta, dta);
     }
@@ -938,7 +938,7 @@ create method xmla_dbschema_foreign_keys () for xmla_discover
   f_sch := self.xmla_get_restriction ('FK_TABLE_SCHEMA', '%');
   f_tbl := self.xmla_get_restriction ('FK_TABLE_NAME', '%');
 
-  if (p_cat is null) 
+  if (p_cat is null)
   {
     if (f_cat is not null)
       p_cat := f_cat;
@@ -947,7 +947,7 @@ create method xmla_dbschema_foreign_keys () for xmla_discover
   }
 
   if (f_cat is null)
-  { 
+  {
     if (p_cat is not null)
       f_cat := p_cat;
     else
@@ -996,7 +996,7 @@ create method xmla_dbschema_foreign_keys () for xmla_discover
     	 (KEY_SEQ + 1) as ORDINAL INTEGER,
     	 (case UPDATE_RULE when 0 then ''NO ACTION'' when 1 then ''CASCADE'' when 2 then ''SET NULL'' when 3 then ''SET DEFAULT'' else NULL end) as UPDATE_RULE varchar(20),
     	 (case DELETE_RULE when 0 then ''NO ACTION'' when 1 then ''CASCADE'' when 2 then ''SET NULL'' when 3 then ''SET DEFAULT'' else NULL end) as DELETE_RULE varchar(20),
-	 PK_NAME, 
+	 PK_NAME,
 	 FK_NAME,
     	 3 as DEFERRABILITY SMALLINT
     	from DB.DBA.SYS_FOREIGN_KEYS SYS_FOREIGN_KEYS
@@ -1013,7 +1013,7 @@ create method xmla_dbschema_foreign_keys () for xmla_discover
   else
     {
        dsn := xmla_get_dsn_name (dsn);
-       stmt := 'SELECT * FROM DB.DBA.SYS_FOREIGN_KEYS_VIEW WHERE PK_TABLE = ''' 
+       stmt := 'SELECT * FROM DB.DBA.SYS_FOREIGN_KEYS_VIEW WHERE PK_TABLE = '''
        		|| _ptbl || ''' AND FK_TABLE = ''' || _ftbl
 	       	|| ''' AND DSN = ''' || dsn || '''';
        exec (stmt, state, msg, vector (), 0, mdta, dta);
@@ -1044,7 +1044,7 @@ create method xmla_dbschema_primary_keys () for xmla_discover
     sch := '%';
   if (tb is null)
     tb := '%';
-  
+
   cat := trim (cat, '"');
   sch := trim (sch, '"');
   tb := trim (tb, '"');
@@ -1195,7 +1195,7 @@ create method xmla_dbschema_tables () for xmla_discover
     sch := '%';
   if (tb is null)
     tb := '%';
-  
+
   if (not xmla_not_local_dsn (dsn))
     {
       declare uname, passwd varchar;
@@ -1215,10 +1215,10 @@ create method xmla_dbschema_tables () for xmla_discover
 		    NULL as DATE_MODIFIED DATE
 		    from DB.DBA.SYS_KEYS where
 		    __any_grants(KEY_TABLE) and
-		    name_part(KEY_TABLE, 0) like ? and 
+		    name_part(KEY_TABLE, 0) like ? and
 		    name_part(KEY_TABLE, 1) like ? and
 		    name_part(KEY_TABLE, 2) like ?
-		    and KEY_IS_MAIN = 1 and 
+		    and KEY_IS_MAIN = 1 and
 		    KEY_MIGRATE_TO is null', null, null,
 	  vector (cat, sch, tb), 0, mdta, dta);
     }
@@ -2083,10 +2083,11 @@ xmla_sparql_result (inout mdta any, inout dta any, in stmt any)
 {
   declare idx, idx2, tmdta any;
 
-  stmt := ucase (trim (stmt));
-
-  if ("LEFT" (stmt, 6) <> 'SPARQL')
-     return;
+  -- XXX: we always must check data in columns mentioned as DV_ANY
+  -- because sparql query can be executed from inside a SQL view
+  -- stmt := ucase (trim (stmt));
+  -- if ("LEFT" (stmt, 6) <> 'SPARQL')
+  --   return;
 
   tmdta := mdta[0];
 

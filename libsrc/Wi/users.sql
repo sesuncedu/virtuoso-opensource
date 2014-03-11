@@ -8,7 +8,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2013 OpenLink Software
+--  Copyright (C) 1998-2014 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -166,6 +166,8 @@ GET_SEC_OBJECT_ID (in _name varchar, out id integer, out is_sql integer, out opt
   if (not isarray(opts))
     opts := vector ();
 
+  if (_login_qual like 'Q %')
+    _login_qual := subseq (_login_qual, 2);
   inl_opts := vector (
 		'PASSWORD_MODE', _pwd_mode,
 		'PASSWORD_MODE_DATA', _pwd_mode_data,
@@ -637,7 +639,7 @@ USER_SET_OPTION (in _name varchar, in opt varchar, in value any)
     opts := ret;
   }
 
-
+  _login_qual := case when length (_login_qual) then concat ('Q ', _login_qual) else NULL end;
   update SYS_USERS set U_OPTS = serialize (opts),
       U_PASSWORD_HOOK = _pwd_mode,
       U_PASSWORD_HOOK_DATA = _pwd_mode_data,
@@ -645,7 +647,7 @@ USER_SET_OPTION (in _name varchar, in opt varchar, in value any)
       U_SQL_ENABLE = _sql_enable,
       U_DAV_ENABLE = _dav_enable,
       U_DEF_QUAL = _login_qual,
-      U_DATA = case when length (_login_qual) then concat ('Q ', _login_qual) else NULL end,
+      U_DATA = _login_qual,
       U_GROUP = _u_group_id,
       U_E_MAIL = _u_e_mail,
       U_FULL_NAME = _u_full_name,
@@ -1079,7 +1081,7 @@ normal_auth:
     {
       rc := "DB"."DBA"."DBEV_LOGIN" (user_name, digest, session_random);
     }
-  else if (rc <= 0) -- only if not authenticated
+  else if (rc <= 0) -- only if not authenticated 
     {
       rc := DB.DBA.FOAF_SSL_LOGIN (user_name, digest, session_random);
       if (rc = 0)

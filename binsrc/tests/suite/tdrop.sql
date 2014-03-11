@@ -1,10 +1,10 @@
 --  
---  $Id$
+--  $Id: tdrop.sql,v 1.5.10.1 2013/01/02 16:15:05 source Exp $
 --  
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --  
---  Copyright (C) 1998-2013 OpenLink Software
+--  Copyright (C) 1998-2014 OpenLink Software
 --  
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -249,3 +249,4 @@ ECHO BOTH ": PRIMARY KEY ALTERED : COUNT=" $LAST[1] "\n";
 select count(id) from PK_TEST;
 ECHO BOTH $IF $EQU $LAST[1] 5  "PASSED" "***FAILED";
 ECHO BOTH ": PRIMARY KEY TEST TABLE : COUNT=" $LAST[1] "\n";
+

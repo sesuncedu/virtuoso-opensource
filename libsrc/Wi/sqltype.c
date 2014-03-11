@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -3152,7 +3152,7 @@ sqlo_udt_check_observer (sqlo_t * so, sql_comp_t * sc, ST * tree)
 ST *
 sqlo_udt_is_mutator (sqlo_t * so, sql_comp_t * sc, ST * lvalue)
 { /* from ASG_STMT */
-  if (ST_COLUMN (lvalue, COL_DOTTED))
+  if (ST_P (lvalue, COL_DOTTED))
     {
       if (lvalue->_.col_ref.prefix)
 	{
@@ -3182,7 +3182,7 @@ sqlo_udt_is_mutator (sqlo_t * so, sql_comp_t * sc, ST * lvalue)
 ST *
 sqlo_udt_make_mutator (sqlo_t * so, sql_comp_t * sc, ST * lvalue, ST *rvalue, ST *var_to_be)
 {
-  if (ST_COLUMN (lvalue, COL_DOTTED) && var_to_be)
+  if (ST_P (lvalue, COL_DOTTED) && var_to_be)
     {
       ST *new_tree =
 	  t_listst (3, CALL_STMT, lvalue->_.col_ref.name, t_list (2, var_to_be, rvalue));
@@ -3573,7 +3573,7 @@ udt_can_write_to (sql_type_t *sqt, caddr_t data, caddr_t *err_ret)
       *err_ret = srv_make_new_error ("22023", "UD055", "Can't write a wide blob handle into a long any column,.  Cast to string or string output first.");
       return;
     }
-  if ((sqt->sqt_dtp == DV_OBJECT || sqt->sqt_dtp == DV_BLOB) && sqt->sqt_class &&
+  if ((sqt->sqt_col_dtp == DV_OBJECT || sqt->sqt_col_dtp == DV_BLOB) && sqt->sqt_class &&
       DV_TYPE_OF (data) == DV_OBJECT &&
       UDT_I_CLASS (data) &&
       udt_instance_of (UDT_I_CLASS (data), sqt->sqt_class))
@@ -3965,11 +3965,11 @@ bif_complete_udt_name (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   sqlc_set_client (qi->qi_client);
   if (mode == DEFAULT_EXISTING)
     {
-      if (parse_sem)
-	semaphore_enter (parse_sem);
+      if (parse_mtx)
+	mutex_enter (parse_mtx);
       udt = sch_name_to_type (isp_schema (NULL), udt_name);
-      if (parse_sem)
-	semaphore_leave (parse_sem);
+      if (parse_mtx)
+	mutex_leave (parse_mtx);
     }
   if (udt)
     {
@@ -4058,8 +4058,8 @@ bif_udt_init (void)
   bif_define ("udt_find_by_ext_name", bif_udt_find_by_ext_name);
   bif_define ("udt_find_by_ext_type", bif_udt_find_by_ext_type);
   bif_define ("__ddl_udt_get_udt_list_by_user", bif_ddl_udt_get_udt_list_by_user);
-  bif_define_typed ("complete_udt_name", bif_complete_udt_name, &bt_varchar);
-  bif_define_typed ("udt_get_info", bif_udt_get_info, &bt_any);
+  bif_define_ex ("complete_udt_name", bif_complete_udt_name, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("udt_get_info", bif_udt_get_info, BMD_RET_TYPE, &bt_any, BMD_DONE);
 
 
   imp_map[UDT_LANG_SQL].scli_instantiate_class = udt_sql_instantiate_class;

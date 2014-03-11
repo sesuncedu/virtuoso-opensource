@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -111,7 +111,7 @@
 #endif
 #define ptr_long 		ptrlong
 #define ptr_ulong 		uptrlong
-
+#define uint64 unsigned int64
 
 #if defined (OS2) || defined (WIN32)
 # define ssize_t		signed int
@@ -188,6 +188,11 @@ typedef __int64 		int64;
 #else
 typedef long long 		int64;
 #endif
+#endif
+
+#ifdef WIN32
+#define INFINITY (DBL_MAX+DBL_MAX)
+#define NAN (INFINITY-INFINITY)
 #endif
 
 struct mem_pool_s;

@@ -2,7 +2,7 @@
 #  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 #  project.
 #  
-#  Copyright (C) 1998-2013 OpenLink Software
+#  Copyright (C) 1998-2014 OpenLink Software
 #  
 #  This project is free software; you can redistribute it and/or modify it
 #  under the terms of the GNU General Public License as published by the
@@ -33,13 +33,19 @@ endif
 # ----------------------------------------------------------------------
 #  Test loading of vad packages by creating demo.db
 # ----------------------------------------------------------------------
-TESTS=mkdemo.sh
-TESTS_ENVIRONMENT=PATH="$(TOP)/binsrc/virtuoso:$(TOP)/binsrc/tests:.:$$PATH" \
-	PORT=$(PORT) \
+#TESTS=mkdemo.sh
+TESTS_ENVIRONMENT= \
 	HOME="$(TOP)" \
+	HOST=localhost \
 	HTMLDOC="$(HTMLDOC)" \
+	MAKE=$(MAKE) \
+	PATH="$(TOP)/binsrc/virtuoso:$(TOP)/binsrc/tests:.:$$PATH" \
+	PORT=$(PORT) \
 	prefix="$(prefix)" \
-	HOST=localhost 
+	TOP="$(TOP)"
+
+check-local:
+	env $(TESTS_ENVIRONMENT) $(SHELL) ./mkdemo.sh
 
 
 # ----------------------------------------------------------------------

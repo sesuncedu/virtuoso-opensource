@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -25,7 +25,9 @@
  *
  */
 
+#ifndef USE_TIDYLIB
 #define OLD_TIDY
+#endif
 
 #include "libutil.h"
 #include "sqlnode.h"
@@ -36,7 +38,7 @@
 #define __USE_MISC 1 /* hack for platform.h defining ulong & uint */
 #endif
 #ifdef OLD_TIDY
-#include "html.h"
+#include "Tidy/html.h"
 #else
 #include <tidy/tidy.h>
 #include <tidy/buffio.h>
@@ -165,7 +167,7 @@ bif_tidy_html (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   errout = NULL;
   mutex_leave (tidy_mtx);
   if (NULL != tidy_errout.tio_data.lm_memblock)
-    dk_free (tidy_errout.tio_data.lm_memblock, -1);
+    dk_free_box (tidy_errout.tio_data.lm_memblock);
   if ((NULL == html_output) || (2 == res))	/* errors */
     {
       dk_free_box (html_output);
@@ -175,7 +177,13 @@ bif_tidy_html (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   TidyBuffer output;
   TidyBuffer errbuf;
   TidyDoc doc;
+  mem_pool_t * mp = THR_TMP_POOL;
 
+  if (mp) /* do not crash if MP exists */
+    {
+      SET_THR_TMP_POOL (NULL);
+      log_error ("non-empty MP in bif_tidy");
+    }
   MP_START ();
   QR_RESET_CTX
   {
@@ -203,10 +211,18 @@ bif_tidy_html (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
     POP_QR_RESET;
     err = thr_get_error_code (THREAD_CURRENT_THREAD);
     MP_DONE ();
+      if (mp) /* restore */
+	{
+	  SET_THR_TMP_POOL (mp);
+	}
     sqlr_resignal (err);
   }
   END_QR_RESET;
   MP_DONE ();
+  if (mp)
+    {
+      SET_THR_TMP_POOL (mp);
+    }
   /*
      tidyBufFree( &output );
      tidyBufFree( &errbuf );
@@ -242,7 +258,7 @@ bif_tidy_list_errors (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   else
     {
       errlist = box_dv_short_nchars (tidy_errout.tio_data.lm_memblock, tidy_errout.tio_pos);
-      dk_free (tidy_errout.tio_data.lm_memblock, -1);
+      dk_free_box (tidy_errout.tio_data.lm_memblock);
     }
 #else
   int res = -1;

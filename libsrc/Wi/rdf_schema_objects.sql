@@ -6,7 +6,7 @@
 --
 --  RDF Schema objects, generator of RDF Views
 --
---  Copyright (C) 1998-2013 OpenLink Software
+--  Copyright (C) 1998-2014 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -1239,8 +1239,10 @@ RDF_VIEW_SYNC_TO_PHYSICAL (in vgraph varchar, in load_data int := 0, in pgraph v
 	{
 	  declare pname varchar;
 	  pname := sprintf ('DB.DBA.RDB2RDF_FILL__%s', replace (replace (tb, '"', '`'), '.', '~'));
+	  commit work;
 	  aq_request (aq, pname, vector ());
 	}
+      commit work;
       aq_wait_all (aq);
     }
   log_enable (old_mode, 1);
@@ -1320,16 +1322,16 @@ DB.DBA.R2RML_CREATE_DATASET (in nth int, in qualifier varchar, in qual_ns varcha
    tbl_name_l := rdf_view_tb (tbl_name);
    owner_l := rdf_view_tb (owner);
    tname := tbl_name_l || suffix;
-   pks := get_keyword (tbl, pkcols); 
-   
+   pks := get_keyword (tbl, pkcols);
+
    pk_text := '';
    for (declare i any, i := 0; i < length (pks) ; i := i + 1)
       pk_text := pk_text || sprintf ('/%U={%s}', pks[i][0], pks[i][0]);
 
-   if (graph is not null)   
-     graph_def := sprintf ('rr:graph <%s> ', graph);  
-    else 
-     graph_def := '';  
+   if (graph is not null)
+     graph_def := sprintf ('rr:graph <%s> ', graph);
+    else
+     graph_def := '';
    ret := ret || sprintf ('<#TriplesMap%U> a rr:TriplesMap; rr:logicalTable [ rr:tableSchema "%s" ; rr:tableOwner "%s" ; rr:tableName "%s" ]; \n',
      tbl_name, qual, own, tbl_name );
    ret := ret || sprintf ('rr:subjectMap [ rr:termtype "IRI"  ; rr:template "http://%s/%s/%s%s"; rr:class %s; %s];\n',
@@ -1364,7 +1366,7 @@ DB.DBA.R2RML_CREATE_DATASET (in nth int, in qualifier varchar, in qual_ns varcha
            pk_text := pk_text || sprintf ('/%U={%s}', FKCOLUMN_NAME, FKCOLUMN_NAME);
    	 }
        if (tbl <> fkt)
-	 { 
+	 {
            ret := ret || sprintf ('rr:predicateObjectMap [ rr:predicateMap [ rr:constant %s ] ; rr:objectMap [ rr:parentTriplesMap <#TriplesMap%U>; %s ]; ] ;\n',
              DB.DBA.R2RML_QUAL_NOTATION (qualifier, qual_ns, concat (tbl_name_l, '_of_', lower (name_part (fkt, 3)))),
              name_part (fkt, 3), jc );
@@ -1376,8 +1378,8 @@ DB.DBA.R2RML_CREATE_DATASET (in nth int, in qualifier varchar, in qual_ns varcha
              uriqa_str, qual, lower (name_part (fkt, 3)), pk_text );
 	 }
      }
- 
-   ret := rtrim (ret, ';\n') || '.\n'; 
+
+   ret := rtrim (ret, ';\n') || '.\n';
    return ret;
 }
 ;

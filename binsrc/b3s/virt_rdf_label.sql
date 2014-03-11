@@ -6,7 +6,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2013 OpenLink Software
+--  Copyright (C) 1998-2014 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -117,6 +117,7 @@ dv:photo rdfs:subPropertyOf virtrdf:image .
 <http://rdf.freebase.com/ns/common.topic.alias> rdfs:subPropertyOf virtrdf:label .
 <http://rdf.freebase.com/ns/measurement_unit.dated_money_value.amount> rdfs:subPropertyOf virtrdf:label .
 <http://commontag.org/ns#label> rdfs:subPropertyOf virtrdf:label .
+<http://purl.org/ontology/iron#prefLabel> rdfs:subPropertyOf virtrdf:label .
 oplzllw:latitude owl:equivalentProperty geo:lat .
 oplzllw:longitude owl:equivalentProperty geo:long .
 oplgp:organization_name rdfs:subPropertyOf virtrdf:label .

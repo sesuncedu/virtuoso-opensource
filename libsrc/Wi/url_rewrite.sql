@@ -4,7 +4,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2013 OpenLink Software
+--  Copyright (C) 1998-2014 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -425,7 +425,7 @@ end_scan:
       long_path := replace (long_path, '^{URIQADefaultHost}^', host);
       if (strstr (long_path, '^{DynamicLocalFormat}^') is not null)
         {
-	  long_path := replace (long_path, '^{DynamicLocalFormat}^', 
+	  long_path := replace (long_path, '^{DynamicLocalFormat}^',
 	  	sprintf ('%s://%{WSHost}s', case when is_https_ctx () then 'https' else 'http' end));
         }
     }

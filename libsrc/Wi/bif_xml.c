@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -4290,6 +4290,92 @@ bif_xte_nodebld_xmlagg_final (caddr_t * qst, caddr_t * err_ret, state_slot_t ** 
 
 
 caddr_t
+bif_int_vectorbld_init (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  caddr_t *acc = (caddr_t *) dk_alloc_box_zero (sizeof (caddr_t) * 15 /*  2^n - 1 */ , DV_ARRAY_OF_LONG);
+  if (1 > BOX_ELEMENTS (args))
+    sqlr_new_error ("22003", "SR344", "Too few arguments for vectorbld_init");
+  qst_set (qst, args[0], (caddr_t) acc);
+  return NULL;
+}
+
+
+caddr_t
+bif_int_vectorbld_acc (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  int acc_length, new_acc_length;
+  int filled_count;		/* number of non-null elements in the first argument, excluding the counter */
+  int argcount;			/* number of arguments in the call */
+  int arg_inx;			/* index of current argument */
+  int new_filled_count;		/* value of filled_count at the end of the procedure */
+  int64 *acc = bif_array_arg (qst, args, 0, "int_vector_agg");
+  caddr_t *dst;
+  qi_signal_if_trx_error ((query_instance_t *) qst);
+  if (1 > BOX_ELEMENTS (args))
+    sqlr_new_error ("22003", "SR345", "Too few arguments for vectorbld_acc");
+  argcount = BOX_ELEMENTS (args);
+/* The following 'if' must not appear here, but this is a workaround for a weird error in aggr in nested select. */
+  if (NULL == acc)
+    {
+      acc = (int64 *) dk_alloc_box_zero (sizeof (int64) * 15 /*  2^n - 1 */ , DV_ARRAY_OF_LONG);
+      qst_set (qst, args[0], acc);
+    }
+  filled_count = acc[0];
+  acc_length = BOX_ELEMENTS (acc);
+  new_filled_count = filled_count;
+  for (arg_inx = 1; arg_inx < argcount; arg_inx++)
+    {
+      if (DV_DB_NULL != DV_TYPE_OF (QST_GET (qst, args[arg_inx])))
+	new_filled_count++;
+    }
+
+  for (new_acc_length = acc_length; (new_filled_count) >= new_acc_length; new_acc_length += (new_acc_length + 1));
+      /* do nothing */ ;
+  if (new_acc_length > MAX_BOX_ELEMENTS)
+    sqlr_new_error ("22003", "SR346", "Out of memory allocation limits: the composed vector contains too many items");
+  if (acc_length != new_acc_length)
+    {
+      caddr_t new_acc;
+      if (NULL == (new_acc = dk_try_alloc_box (sizeof (int64) * new_acc_length, DV_ARRAY_OF_LONG)))
+	qi_signal_if_trx_error ((query_instance_t *) qst);
+      memset (new_acc, 0, sizeof (int64) * new_acc_length);
+      memcpy (new_acc, acc, sizeof (int64) * acc_length);
+      qst_set (qst, args[0], new_acc);
+      acc = new_acc;
+      acc_length = new_acc_length;
+    }
+  dst = acc + filled_count + 1;
+  for (arg_inx = 1; arg_inx < argcount; arg_inx++)
+    {
+      caddr_t arg = QST_GET (qst, args[arg_inx]);
+      if (DV_DB_NULL == DV_TYPE_OF (arg))
+	continue;
+      dst[0] = unbox_iri_int64 (arg);
+      dst++;
+    }
+  /* Now we know what's the precise value of new_filled_count */
+  acc[0] = new_filled_count;
+  return NULL;
+}
+
+
+caddr_t
+bif_int_vectorbld_final (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  int64 *acc = NULL, new_box;
+  size_t filled_size;
+  int arg_ctr = BOX_ELEMENTS (args);
+  if (1 > arg_ctr)
+    sqlr_new_error ("22003", "SR444", "Too few arguments for vectorbld_final");
+  qst_swap_or_get_copy (qst, args[0], (int64 *) (&acc));
+  filled_size = sizeof (int64) * acc[0];
+  new_box = dk_alloc_box (filled_size, DV_ARRAY_OF_LONG);
+  memcpy (new_box, acc + 1, filled_size);
+  return new_box;
+}
+
+
+caddr_t
 bif_vectorbld_init (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
   caddr_t * acc = (caddr_t *) dk_alloc_box_zero (sizeof (caddr_t) * 15 /*  2^n - 1 */, DV_ARRAY_OF_POINTER);
@@ -4521,7 +4607,11 @@ bif_vectorbld_final_impl (caddr_t * qst, state_slot_t ** args, int return_bits)
   dk_check_vectorbld_acc (acc);
   dk_free_box (acc[0]);
   if ((0 == filled_size) && (2 & return_bits))
-    new_box = NEW_DB_NULL;
+    {
+      new_box = NEW_DB_NULL;
+      acc[0] = NULL;
+      dk_free_tree ((caddr_t)acc);
+    }
   else
     {
       new_box = dk_alloc_box (filled_size, DV_ARRAY_OF_POINTER);
@@ -5832,19 +5922,19 @@ bif_xml_init (void)
   bif_define (XMLSPROC, bif_xmls_proc);
 
   /* bif_define (TREETOXML, bif_tree_to_xml); */
-  bif_define ("xml_tree", bif_xml_tree);
+  bif_define_ex ("xml_tree", bif_xml_tree, BMD_RET_TYPE, &bt_xml_entity, BMD_DONE);
   bif_set_uses_index (bif_xml_tree);
-  bif_define_typed ("xtree_doc", bif_xtree_doc, &bt_xml_entity);
+  bif_define_ex ("xtree_doc", bif_xtree_doc, BMD_RET_TYPE, &bt_xml_entity, BMD_DONE);
   bif_set_uses_index (bif_xtree_doc);
-  bif_define_typed ("xtree_doc_vdb", bif_xtree_doc_vdb, &bt_xml_entity);
+  bif_define_ex ("xtree_doc_vdb", bif_xtree_doc_vdb, BMD_RET_TYPE, &bt_xml_entity, BMD_DONE);
   bif_set_uses_index (bif_xtree_doc_vdb);
   bif_define ("xml_expand_refs", bif_xml_expand_refs);
 #if 0
   bif_define ("xml_store_tree", bif_xml_store_tree);
   bif_set_uses_index (bif_xml_store_tree);
 #endif
-  bif_define_typed ("number", bif_number, &bt_numeric);
-  bif_define_typed ("xml_cut", bif_xml_cut, &bt_xml_entity);
+  bif_define_ex ("number", bif_number, BMD_RET_TYPE, &bt_numeric, BMD_DONE);
+  bif_define_ex ("xml_cut", bif_xml_cut, BMD_RET_TYPE, &bt_xml_entity, BMD_DONE);
   bif_define ("__vt_index", bif_vt_index);
   bif_define ("xmls_viewremove", bif_xmls_viewremove);
   bif_define ("xml_view_dtd", bif_xml_view_dtd);
@@ -5881,6 +5971,10 @@ bif_xml_init (void)
   bif_define ("xte_nodebld_xmlagg_final", bif_xte_nodebld_xmlagg_final);
   bif_define ("xte_node_from_nodebld", bif_xte_node_from_nodebld);
 
+  bif_define ("int_vectorbld_init", bif_int_vectorbld_init);
+  bif_define ("int_vectorbld_acc", bif_int_vectorbld_acc);
+  bif_define ("int_vectorbld_final", bif_int_vectorbld_final);
+
   bif_define ("vectorbld_init", bif_vectorbld_init);
   bif_define ("vectorbld_acc", bif_vectorbld_acc);
   bif_define ("vectorbld_agg_acc", bif_vectorbld_agg_acc);
@@ -5899,16 +5993,14 @@ bif_xml_init (void)
   bif_define ("xq_sequencebld_final", bif_xq_sequencebld_final);
   bif_define ("xq_sequencebld_agg_final", bif_xq_sequencebld_agg_final);
 
-  bif_define_typed ("xmlelement", bif_xmlelement, &bt_any);
-  bif_define_typed ("xmlattributes", bif_xmlattributes, &bt_any);
-  bif_define_typed ("xmlattributes_2", bif_xmlattributes, &bt_any);
-  bif_define_typed ("xmlforest", bif_xmlforest, &bt_any);
-  bif_define_typed ("xmlforest_2", bif_xmlforest, &bt_any);
-  bif_define_typed ("xmlconcat", bif_xmlconcat, &bt_any);
-  bif_define_typed ("serialize_to_UTF8_xml", bif_serialize_to_UTF8_xml, &bt_varchar);
-  bif_define_typed ("xte_expand_xmlns", bif_xte_expand_xmlns, &bt_any);
-  bif_define_typed ("xmlnss_get", bif_xmlnss_get, &bt_xml_entity);
-  bif_define_typed ("xmlnss_xpath_pre", bif_xmlnss_xpath_pre, &bt_varchar);
+  bif_define_ex ("xmlelement", bif_xmlelement, BMD_RET_TYPE, &bt_xml_entity, BMD_DONE);
+  bif_define_ex ("xmlattributes", bif_xmlattributes, BMD_ALIAS, "xmlattributes_2", BMD_RET_TYPE, &bt_xml_entity, BMD_DONE);
+  bif_define_ex ("xmlforest", bif_xmlforest, BMD_ALIAS, "xmlforest_2", BMD_RET_TYPE, &bt_xml_entity, BMD_DONE);
+  bif_define_ex ("xmlconcat", bif_xmlconcat, BMD_RET_TYPE, &bt_xml_entity, BMD_DONE);
+  bif_define_ex ("serialize_to_UTF8_xml", bif_serialize_to_UTF8_xml, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("xte_expand_xmlns", bif_xte_expand_xmlns, BMD_RET_TYPE, &bt_xml_entity, BMD_DONE);
+  bif_define_ex ("xmlnss_get", bif_xmlnss_get, BMD_RET_TYPE, &bt_xml_entity, BMD_DONE);
+  bif_define_ex ("xmlnss_xpath_pre", bif_xmlnss_xpath_pre, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
 
   bif_text_init ();
   bif_ap_init ();

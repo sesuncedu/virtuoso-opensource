@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -31,6 +31,17 @@
 /* But it's inevitable for 64-bit platforms with structures as hash data * (GK) */
 #undef NEXT4
 #define NEXT4(X)	_RNDUP((X), SIZEOF_VOID_P)
+
+
+#define memcpy_8(target, source, len) \
+  {if (sizeof (caddr_t) == len) *(caddr_t*)(target) = *(caddr_t*)(source); \
+  else memcpy (target, source, len);}
+
+#define memcpy_8c(target, source, len) \
+  {if (sizeof (caddr_t) == len) *(caddr_t*)(target) = *(caddr_t*)(source); \
+    else if (len) memcpy (target, source, len);}
+
+
 
 caddr_t
 id_hash_get (id_hash_t * ht, caddr_t key)
@@ -303,8 +314,10 @@ box_hash (caddr_t box)
   switch (dtp)
     {
     case DV_LONG_INT:
-      return ((*(boxint *) box) & ID_HASHED_KEY_MASK);
-
+      {
+	uint64 i = *(uint64*)box;
+	return ((i >> 32) ^ i) & ID_HASHED_KEY_MASK;
+      }
     case DV_IRI_ID:
     case DV_IRI_ID_8:
       if (NULL == box)
@@ -332,7 +345,7 @@ box_hash (caddr_t box)
       {
 	uint32 len = box_length_inline (box);
 	if (len > 0)
-	  BYTE_BUFFER_HASH (h, box, len - 1);
+	  BYTE_BUFFER_HASH (h, box, len - 1); /* was BYTE_BUFFER_HASH2 but it break xslt compare with UNAMEs etc. */
 	else
 	  h = 0;
 	return h & ID_HASHED_KEY_MASK;
@@ -390,13 +403,15 @@ box_hash_cut (caddr_t box, int depth)
 }
 
 void dtp_set_cmp (dtp_t dtp, box_hash_cmp_func_t f);
+void dtp_set_strong_cmp (dtp_t dtp, box_hash_cmp_func_t f);
 
 
 void
-dk_dtp_register_hash (dtp_t dtp, box_hash_func_t hf, box_hash_cmp_func_t cmp)
+dk_dtp_register_hash (dtp_t dtp, box_hash_func_t hf, box_hash_cmp_func_t cmp, box_hash_cmp_func_t strong_cmp)
 {
   dtp_hash_func[dtp] = hf;
   dtp_set_cmp (dtp, cmp);
+  dtp_set_strong_cmp (dtp, strong_cmp);
 }
 
 
@@ -407,11 +422,12 @@ treehash (char *strp)
   return (box_hash (str));
 }
 
+extern int box_strong_equal (cbox_t b1, cbox_t b2);
 
 int
 treehashcmp (char *x, char *y)
 {
-  return (box_equal (*((caddr_t *) x), *((caddr_t *) y)));
+  return (box_strong_equal (*((caddr_t *) x), *((caddr_t *) y)));
 }
 
 
@@ -617,12 +633,12 @@ id_hash_set_rehash_pct (id_hash_t * ht, uint32 pct)
 #define DBG_HASHEXT_ALLOC(SZ) dbg_mp_alloc_box (DBG_ARGS THR_TMP_POOL, (SZ), DV_CUSTOM)
 #else
 #define DBG_HASHEXT_NAME(name) t_##name
-#define DBG_HASHEXT_ALLOC(SZ) mp_alloc_box (THR_TMP_POOL, (SZ), DV_CUSTOM)
+#define DBG_HASHEXT_ALLOC(SZ) mp_alloc_box_ni (THR_TMP_POOL, (SZ), DV_NON_BOX)
 #endif
 #define DBG_HASHEXT_FREE(BOX,SZ)
-
+#define FROM_POOL
 #include "Dkhashext_template.c"
-
+#undef FROM_POOL
 #undef DBG_HASHEXT_NAME
 #undef DBG_HASHEXT_ALLOC
 #undef DBG_HASHEXT_FREE
@@ -651,7 +667,7 @@ void id_hash_rehash (id_hash_t * ht, uint32 new_sz) { dbg_id_hash_rehash (__FILE
 int id_hash_remove (id_hash_t * ht, caddr_t key) { return dbg_id_hash_remove (__FILE__, __LINE__, ht, key); }
 #undef id_hash_get_and_remove
 int id_hash_get_and_remove (id_hash_t * ht, caddr_t key, caddr_t found_key, caddr_t found_data) { return dbg_id_hash_get_and_remove (__FILE__, __LINE__, ht, key, found_key, found_data); }
-#undef id_hash_remove_rnd 
+#undef id_hash_remove_rnd
 int id_hash_remove_rnd (id_hash_t * ht, int inx, caddr_t key, caddr_t data) { return dbg_id_hash_remove_rnd (__FILE__, __LINE__, ht, inx, key, data); }
 #undef id_str_hash_create
 id_hash_t * id_str_hash_create (id_hashed_key_t buckets) { return dbg_id_str_hash_create (__FILE__, __LINE__, buckets); }
@@ -679,7 +695,7 @@ void t_id_hash_rehash (id_hash_t * ht, uint32 new_sz) { dbg_t_id_hash_rehash (__
 int t_id_hash_remove (id_hash_t * ht, caddr_t key) { return dbg_t_id_hash_remove (__FILE__, __LINE__, ht, key); }
 #undef t_id_hash_get_and_remove
 int t_id_hash_get_and_remove (id_hash_t * ht, caddr_t key, caddr_t found_key, caddr_t found_data) { return dbg_t_id_hash_get_and_remove (__FILE__, __LINE__, ht, key, found_key, found_data); }
-#undef t_id_hash_remove_rnd 
+#undef t_id_hash_remove_rnd
 int t_id_hash_remove_rnd (id_hash_t * ht, int inx, caddr_t key, caddr_t data) { return dbg_t_id_hash_remove_rnd (__FILE__, __LINE__, ht, inx, key, data); }
 #undef t_id_str_hash_create
 id_hash_t * t_id_str_hash_create (id_hashed_key_t buckets) { return dbg_t_id_str_hash_create (__FILE__, __LINE__, buckets); }

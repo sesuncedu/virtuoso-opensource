@@ -4,7 +4,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2013 OpenLink Software
+--  Copyright (C) 1998-2014 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -885,7 +885,7 @@ perform_actual_load:
   --!!!TBD: if (get_method in ('MGET', 'GET+MGET')) { ... }
   if (get_method in ('POST', 'GET', 'GET+MGET'))
     {
-      declare acc_hdr varchar; 
+      declare acc_hdr varchar;
       req_hdr := NULL;
       get_proxy := get_keyword_ucase ('get:proxy', options);
       acc_hdr := trim (get_keyword_ucase ('get:accept', options));
@@ -1384,7 +1384,7 @@ create procedure DB.DBA.RDF_HTTP_URL_GET (inout url any, in base any, inout hdr 
 }
 ;
 
--- Extracts Set-Cookie: headers from a source URL's response and builds a corresponding 
+-- Extracts Set-Cookie: headers from a source URL's response and builds a corresponding
 -- Cookie: request header for the URL being redirected to
 create procedure DB.DBA.COOKIE_HDR (in src_url any, in resp_hdrs any, in dest_url any)
 {
@@ -1427,11 +1427,11 @@ create procedure DB.DBA.COOKIE_HDR (in src_url any, in resp_hdrs any, in dest_ur
 
   if (length (cookies) = 0)
     goto done;
-    
+
   req_cookie_hdr := '';
   foreach (any cookie in cookies) do
   {
-    -- Assume any expiring cookies are still valid, they've only just been set. 
+    -- Assume any expiring cookies are still valid, they've only just been set.
     -- Check the cookies apply to the domain + path being redirected to
     valid := 1;
     cookie_domain := get_keyword ('domain', cookie, ua_src_domain);
@@ -1515,7 +1515,7 @@ create function DB.DBA.RDF_PROXY_GET_HTTP_HOST ()
     else if (connection_get ('__http_host') is not null)
         default_host := connection_get ('__http_host');
     else
-        default_host := cfg_item_value (virtuoso_ini_path (), 'URIQA', 'DefaultHost');
+        default_host := virtuoso_ini_item_value ('URIQA', 'DefaultHost');
     if (default_host is not null)
         cname := default_host;
     else
@@ -1607,7 +1607,7 @@ create procedure DB.DBA.RDF_SPONGE_PROXY_IRI(in uri varchar := '', in login varc
 }
 ;
 
--- Postprocessing for sponging pure RDF sources 
+-- Postprocessing for sponging pure RDF sources
 create procedure DB.DBA.RDF_LOAD_RDFXML_PP_GENERIC (in contents varchar, in base varchar, in graph varchar, in mimetype varchar :='text/html')
 {
   declare proxyiri, docproxyiri, dociri varchar;
@@ -1913,11 +1913,11 @@ load_grddl:;
   --      DB.DBA.RDF_LOAD_RDFXML (xd, new_origin_uri, groupdest);
   --    return 1;
   --  }
-  
+
 no_cart:
 
   if (rdf_fmt) -- even cartridges didn't extracted anything more, the rdf is already loaded
-    return 1; 
+    return 1;
 
   if ((dest is null) and (get_soft is null or (get_soft <> 'add')))
     {

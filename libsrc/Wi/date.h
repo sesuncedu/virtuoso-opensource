@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -74,6 +74,14 @@ extern void dt_audit_fields (char *dt);
   ((int32)((CUC (dt, 0) << 16) | \
     (CUC (dt, 1) << 8) | \
     CUC (dt, 2) | ((CUC (dt, 0) & 0x80) ? 0xff000000 : 0)))
+
+/* unsigned day, dt sorts as unsigned binary string for index, so when using numeric offset it is also unsigned for dates that have the high bit set */
+#define DT_UDAY(dt) \
+  ((int32)((CUC (dt, 0) << 16) | \
+    (CUC (dt, 1) << 8) | \
+	   CUC (dt, 2)))
+
+
 
 #define DT_HOUR(dt) \
   CUC(dt, 3)
@@ -184,5 +192,20 @@ extern void dt_audit_fields (char *dt);
 
 #define SPERDAY (24*60*60)
 #define DT_CAST_TO_TOTAL_SECONDS(dt) ((boxint)DT_DAY (dt) * 24 * 60 * 60 + (boxint)DT_HOUR (dt) * 60 * 60 + (boxint)DT_MINUTE (dt) * 60 + DT_SECOND (dt))
+
+#ifdef WORDS_BIGENDIAN
+#define memcpy_dt(tgt, src) memcpy (tgt, src, DT_LENGTH)
+#define memcmp_dt(dt1, dt2) \
+  { if (memcmp (dt1, dt2, DT_CMP_LENGTH)) goto neq;}
+#else
+#define memcpy_dt(tgt1, src1) \
+  { db_buf_t __tgt = (db_buf_t)tgt1, __src = (db_buf_t)src1; 	\
+  *(int64*)(__tgt) = *(int64*)(__src); \
+  *(short*)(__tgt + 8) = *(short*)((__src) + 8); \
+}
+
+#define memcmp_dt(dt1, dt2, neq)				\
+  {if (*(int64*)(dt1) != *(int64*)(dt2)) goto neq;}
+#endif
 
 #endif /* _DATE_H */

@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -304,6 +304,22 @@ dfe_is_range_pred (df_elt_t * pred)
 	  && BOP_EQ != pred->_.bin.op);
 }
 
+int 
+key_serves_for_text_pred (df_elt_t * tb_dfe, dbe_key_t * key)
+{
+  /* for a distinct projection, see if the leading part is an id to be bound by a text/geo pred */
+  ST * tree;
+  caddr_t prefix;
+  df_elt_t * text_pred = tb_dfe->_.table.text_pred;
+  dbe_key_t * id_key = tb_text_key (tb_dfe->_.table.ot->ot_table);
+  dbe_column_t * id_col;
+  df_elt_t * eq_pred;
+  if (!text_pred || !id_key)
+    return 0;
+  id_col = (dbe_column_t*)id_key->key_parts->data;
+  return id_col == (dbe_column_t*)key->key_parts->data;
+}
+
 
 int
 sqlo_ip_leading_text (df_elt_t * tb_dfe, dbe_key_t * key, index_choice_t * ic, df_elt_t ** text_id_pred)
@@ -328,12 +344,13 @@ sqlo_ip_leading_text (df_elt_t * tb_dfe, dbe_key_t * key, index_choice_t * ic, d
       if (prev_col == id_col)
 	break;
       eq_pred = sqlo_key_part_best (prev_col, tb_dfe->_.table.col_preds, 0);
-      if (!dfe_is_eq_pred (eq_pred))
+      if (!dfe_is_eq_pred (eq_pred)
+	  || !pred_const_rhs (eq_pred))
 	return 0;
     }
   END_DO_SET();
   text_pred->dfe_is_placed = DFE_PLACED;
-  text_card = dbe_key_count (key->key_table->tb_primary_key);
+  text_card = dfe_scan_card (tb_dfe);
   ic->ic_key = key;
   ic->ic_text_pred = text_pred;
   ic->ic_text_order = 1;
@@ -356,7 +373,7 @@ sqlo_ip_trailing_text (df_elt_t * tb_dfe, index_choice_t * ic)
     return 0;
   dfe_text_cost (tb_dfe, &text_cost, &text_card, 0);
   ic->ic_unit += text_cost;
-  ic->ic_arity *= text_card;
+  ic->ic_arity /= MAX (1, text_card);
   ic->ic_text_pred = text_pred;
   return 1;
 }
@@ -763,7 +780,7 @@ sqlo_index_path (sqlo_t * so, df_elt_t * tb_dfe, dk_set_t path, int pk_given)
       ic.ic_key = key;
       sqlo_rdf_o_range (tb_dfe, key, path, &ic);
       if (key->key_no_pk_ref && !key_is_first_cond (tb_dfe, key)
-	  && !(tb_dfe->_.table.text_pred && !path) && !opt_inx_name)
+	  && !(tb_dfe->_.table.text_pred && key_serves_for_text_pred (tb_dfe, key) && !path) && !opt_inx_name)
 	{
 	  tb_dfe->_.table.col_preds = old_cp;
 	  continue;
@@ -887,7 +904,7 @@ sqlg_rdf_string_range (df_elt_t * tb_dfe, table_source_t *org_ts, index_choice_t
   search_spec_t * sp;
   table_source_t * r_ts, * range_ref_ts;
   sqlo_t * so = tb_dfe->dfe_sqlo;
-  r_ts = (table_source_t*)sqlg_make_ts (so, ic->ic_o_range);
+  r_ts = (table_source_t*)sqlg_make_ts (so, ic->ic_o_range, NULL);
   r_ts->ts_is_alternate = TS_ALT_PRE;
   dfe_list_set_placed (ic->ic_o_range_ref_ic->ic_col_preds, DFE_PLACED);
   range_ref_ts = (table_source_t*)sqlg_make_1_ts (so, tb_dfe, ic->ic_o_range_ref_ic, tb_dfe->_.table.join_test, 0);
@@ -976,7 +993,11 @@ sqlg_in_iter_add_after_test (sqlo_t * so, dk_set_t prev_in_iters, key_source_t *
 	      sp->sp_min_op = CMP_EQ;
 	      sp->sp_next = ks->ks_row_spec;
 	      ks->ks_row_spec = sp;
+	      if (ks->ks_key->key_is_col)
+		sp->sp_cl = *cl_list_find (ks->ks_key->key_row_var, col->col_id);
+	      else
 	      sp->sp_cl = *key_find_cl (ks->ks_key, col->col_id);
+	      sp->sp_col = col;
 	    }
 	}
       END_DO_SET();
@@ -1023,6 +1044,7 @@ sqlg_make_1_ts (sqlo_t * so, df_elt_t * tb_dfe, index_choice_t * ic, df_elt_t **
   if (ic->ic_key == table->tb_primary_key && (tb_dfe->_.table.xpath_pred || tb_dfe->_.table.is_xcontains))
     sqlg_xpath_node (so, tb_dfe);
 
+  ts->ts_order = sc->sc_order;
   if (ic->ic_inx_op)
     {
       ts->ts_inx_op = sqlg_inx_op (so, tb_dfe, ic->ic_inx_op, NULL);
@@ -1073,7 +1095,9 @@ sqlg_make_1_ts (sqlo_t * so, df_elt_t * tb_dfe, index_choice_t * ic, df_elt_t **
 
   sqlc_update_set_keyset (sc, ts);
   sqlc_ts_set_no_blobs (ts);
-  if (!sc->sc_update_keyset)
+  if (SC_UPD_PLACE != sc->sc_is_update && !sc->sc_in_cursor_def)
+    ts->ts_current_of = NULL;
+  if (!sc->sc_update_keyset && !sqlg_is_vector)
     ts_alias_current_of (ts);
   else if (!ts->ts_main_ks)
     ts->ts_need_placeholder = 1;
@@ -1091,6 +1115,9 @@ sqlg_make_1_ts (sqlo_t * so, df_elt_t * tb_dfe, index_choice_t * ic, df_elt_t **
       ts->ts_order_ks->ks_is_vacuum = 1;
     }
   ts->ts_cardinality = ic->ic_arity;
+  ts->ts_inx_cardinality = ic->ic_inx_card;
+  ts->ts_cost = ic->ic_unit;
+  ts->ts_card_measured = 0 != ic->ic_leading_constants;
   so->so_sc->sc_order = ord;
   if (ic->ic_key->key_distinct || ic->ic_key->key_no_pk_ref)
     dfe_list_set_placed (ic->ic_col_preds, DFE_PLACED); /* if partial inx, must recheck the preds with a real inx, could be out of date */
@@ -1116,7 +1143,11 @@ sqlg_make_path_ts (sqlo_t * so, df_elt_t * tb_dfe)
       if (!ret_ts)
 	ret_ts = ts;
       else
+	{
 	sql_node_append (&ret_ts, ts);
+	  if (IS_TS (ts))
+	    ((table_source_t*)ts)->ts_in_index_path = 1;
+	}
     }
   END_DO_SET();
   if (tb_dfe->_.table.after_join_test)

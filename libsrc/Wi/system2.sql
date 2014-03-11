@@ -4,7 +4,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2013 OpenLink Software
+--  Copyright (C) 1998-2014 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -20,6 +20,62 @@
 --  51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
 --
 --
+
+create table DB.DBA.SYS_COL_INFO (coi_table varchar, coi_index varchar, coi_nth int, coi_type int,
+  primary key (coi_table, coi_index, coi_nth, coi_type),
+  coi_column varchar,
+  coi_pages bigint,
+  coi_ces bigint,
+  coi_values bigint,
+  coi_bytes bigint)
+;
+
+
+
+create procedure coi_fill (in stats any)
+{
+  declare inx, n int;
+ n := length (stats);
+  delete from sys_col_info;
+  for (inx := 0; inx < n; inx := inx + 1)
+    {
+      declare stat any;
+      declare tb, kn, cname varchar;
+      declare icol, ice, k_id int;
+    stat := stats[inx];
+    k_id := stat[0];
+    stat := stat[6];
+      if (not isstring (stat))
+	goto next_key;
+      select key_table, key_name into tb, kn from sys_keys where key_id = k_id;
+    icol := 0;
+      for (;;)
+	{
+	cname := (select "COLUMN" from sys_key_parts, sys_cols where kp_key_id = k_id and kp_nth = icol and col_id = kp_col);
+	  if (cname is null)
+	    goto next_key;
+	  insert into sys_col_info (coi_table, coi_index, coi_nth, coi_type, coi_column,
+				coi_pages, coi_ces, coi_values, coi_bytes)
+	    values (tb, kn, icol, -1, cname,
+		    __col_info (stat, icol, 'n_pages', 0), 0, __col_info (stat, icol, 'n_values', 0), __col_info (stat, icol, 'n_bytes', 0));
+	  for (ice := 0; ice < 16; ice := ice + 1)
+	    {
+	      if (__col_info (stat, icol, 'ce_ces', ice))
+		{
+		  insert into sys_col_info (coi_table, coi_index, coi_nth, coi_type, coi_column,
+					coi_pages, coi_ces, coi_values, coi_bytes)
+		    values (tb, kn, icol, ice, cname,
+			    0, __col_info (stat, icol, 'ce_ces', ice), __col_info (stat, icol, 'ce_values', ice), __col_info (stat, icol, 'ce_bytes', ice));
+
+		}
+	    }
+	icol := icol + 1;
+	}
+    next_key: ;
+    }
+}
+;
+
 create procedure DB.DBA.SYS_INDEX_SPACE_STATS_PROC ()
 {
   declare ISS_KEY_ID, ISS_NROWS, ISS_ROW_BYTES, ISS_BLOB_PAGES, ISS_ROW_PAGES integer;
@@ -32,6 +88,7 @@ create procedure DB.DBA.SYS_INDEX_SPACE_STATS_PROC ()
   if (isarray (_res))
     {
       declare _inx, _len integer;
+      coi_fill (_res);
       _inx := 0;
       _len := length (_res);
 
@@ -60,13 +117,28 @@ create view DB.DBA.SYS_INDEX_SPACE_STATS as
   from
     DB.DBA.SYS_INDEX_SPACE_STATS_PROC () (
     ISS_KEY_ID integer,
-    ISS_NROWS integer,
-    ISS_ROW_BYTES integer,
-    ISS_BLOB_PAGES integer,
-    ISS_ROW_PAGES integer) _tmp,
+    ISS_NROWS bigint,
+    ISS_ROW_BYTES bigint,
+    ISS_BLOB_PAGES bigint,
+    ISS_ROW_PAGES bigint) _tmp,
     DB.DBA.SYS_KEYS table option (order)
   where
     ISS_KEY_ID = KEY_ID
+;
+
+
+create procedure SYS_EXTENT_MAP_STAT ()
+{
+  declare EM_KEY varchar(50);
+  declare EM_N_PAGES, EM_N_FREE_PAGES, EM_N_REMAP_PAGES, EM_N_FREE_REMAP_PAGES, EM_REMAP_ON_HOLD, EM_N_BLOB_PAGES, EM_N_FREE_BLOB_PAGES, EM_C_FREE, EM_C_FREE_BLOB, EM_C_FREE_REMAP integer;
+  declare arr any;
+  result_names (EM_KEY, EM_N_PAGES, EM_N_FREE_PAGES, EM_N_REMAP_PAGES, EM_N_FREE_REMAP_PAGES, EM_REMAP_ON_HOLD, EM_N_BLOB_PAGES, EM_N_FREE_BLOB_PAGES);
+  arr := sys_em_stat ();
+  foreach (any x in arr) do
+    {
+      result (x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]);
+    }
+}
 ;
 
 --!AWK PUBLIC
@@ -151,7 +223,7 @@ create procedure DB.DBA.VD_STATISTICS (in _dsn varchar := '%', in vd_table_mask 
 		CS_AVG_LEN,
 		CS_N_VALUES, CS_N_ROWS)
 		select
-		  KEY_TABLE, "COLUMN", stat_cardinality, NULL, NULL,
+		  "TABLE", "COLUMN", stat_cardinality, NULL, NULL,
 		  (case when COL_PREC = 0 then 30
 			when dv_type_title (COL_DTP) like 'LONG %' then 30 else COL_PREC end),
 		  stat_cardinality, stat_cardinality
@@ -1127,3 +1199,254 @@ create procedure DB.DBA.obj2xml (
   return retValue;
 }
 ;
+
+create procedure
+qt_record (in file varchar, in text varchar, in params any := null, in comment varchar, in check_order int := 1,
+in check_col_names int := 1, in check_da_below int := 0,
+in check_plan int := 1, in plan_xpath varchar := null, in addp int := 0, in ref_result varchar := null)
+{
+  declare stat, msg, meta, data, xp, xd, ss, axp, da, meta1, data1 any;
+  declare daseq, darnd int;
+
+  ss := string_output ();
+  xp := explain (text, -1, 1);
+  xd := xtree_doc (xp);
+
+  --axp := cast (xslt ('file:/qt.xsl', xd) as varchar);
+  axp := qt_xpath_gen (xd);
+
+  if (check_plan and plan_xpath is not null and xpath_eval (plan_xpath, xd) = 0)
+    signal ('.....', 'The spcified check do not match execution plan');
+
+  if (check_plan and axp is not null and xpath_eval (axp, xd) is null)
+    signal ('.....', 'The auto generated xpath check cannot be generated');
+--  dbg_obj_print (axp);
+--  dbg_obj_print (xpath_eval (axp, xd));
+
+  if (plan_xpath is null)
+    plan_xpath := '';
+  if (plan_xpath = '' and axp is not null)
+    plan_xpath := axp;
+
+  exec (text, stat, msg, params, 0, meta, data);
+  da := db_activity (1);
+  if (check_da_below)
+    {
+      darnd := (da[0] * (check_da_below + 100)) / 100;
+      daseq := (da[1] * (check_da_below + 100)) / 100;
+    }
+
+  http (sprintf ('<test>\n'), ss);
+  http (sprintf ('    <comment>%V</comment>\n', comment), ss);
+  http (sprintf ('    <query><![CDATA['), ss);
+  http (text, ss);
+  http (sprintf ('    ]]></query>\n'), ss);
+  http (sprintf ('    <plans>\n'), ss);
+  http (sprintf ('	<plan>\n'), ss);
+  http (sprintf ('	    <verify result-order="%d" col-names="%d" plan-xpath="%V">\n', check_order, check_col_names, plan_xpath), ss);
+  http (sprintf ('		<da-below rnd="%d" seq="%d" same-seg="" />\n', darnd, daseq), ss);
+  http (sprintf ('	    </verify>\n'), ss);
+  exec ('explain (?)', stat, msg, vector (text), 0, meta1, data1);
+  http ('<text><![CDATA[', ss);
+  foreach (any c in data1) do
+    {
+      http (c[0], ss);
+      http ('\n', ss);
+    }
+  http (']]></text>\n', ss);
+  http (sprintf ('	    <xmlplan>\n'), ss);
+  http (xp, ss);
+  http (sprintf ('	    </xmlplan>\n'), ss);
+  http (sprintf ('	</plan>\n'), ss);
+  http (sprintf ('    </plans>\n'), ss);
+
+  http (sprintf ('    <columns>\n'), ss);
+  foreach (any c in meta[0]) do
+    {
+      --dbg_obj_print (c);
+      http (sprintf ('         <column name="%V"/>\n', c[0]), ss);
+    }
+  http (sprintf ('    </columns>\n'), ss);
+  http (sprintf ('    <result cnt="%d">\n', length (data)), ss);
+  if (check_order = 0)
+    gvector_sort (data, 1, 0, 1);
+  foreach (any c in data) do
+    {
+      declare i int;
+      http ('<row>\n', ss);
+      for (i := 0; i < length (c); i := i + 1)
+        {
+	  http (sprintf ('    <col dtp="%d">%V</col>\n', __tag (c[i]), cast (c[i] as varchar)), ss);
+        }
+      http ('</row>\n', ss);
+    }
+  http (sprintf ('    </result>\n'), ss);
+  http (sprintf ('</test>'), ss);
+  string_to_file (file, ss, -2);
+  return axp;
+}
+;
+
+
+create procedure
+qt_check (in file varchar, out message varchar, in add_test int := 0) returns int
+{
+  declare xt, qr, xp_test, expl, da any;
+  declare stat, msg, meta, data, r, check_order, cnt any;
+  declare daseq, darnd int;
+
+  declare exit handler for sqlstate '*' {
+    message := message || ' : ' || __SQL_MESSAGE;
+    return 0;
+  };
+
+  xt := qt_source (file);
+  message := xpath_eval ('/test/comment/text()', xt);
+  qr := charset_recode (xpath_eval ('string (/test/query)', xt), '_WIDE_', 'UTF-8');
+  check_order := atoi (charset_recode (xpath_eval ('/test/plans/plan/verify/@result-order', xt), '_WIDE_', 'UTF-8'));
+  xp_test := charset_recode (xpath_eval ('/test/plans/plan/verify/@plan-xpath', xt), '_WIDE_', 'UTF-8');
+  darnd := atoi (charset_recode (xpath_eval ('/test/plans/plan/verify/da-below/@rnd', xt), '_WIDE_', 'UTF-8'));
+  daseq := atoi (charset_recode (xpath_eval ('/test/plans/plan/verify/da-below/@seq', xt), '_WIDE_', 'UTF-8'));
+  --dbg_obj_print (qr);
+  expl := xtree_doc (explain (qr, -1, 1));
+  if (xpath_eval (xp_test, expl) is null)
+    {
+      message := message || ' : XPath test do not match';
+      return 0;
+    }
+  cnt := atoi (charset_recode (xpath_eval ('/test/result/@cnt', xt), '_WIDE_', 'UTF-8'));
+  exec (qr, stat, msg, vector (), 0, meta, data);
+  da := db_activity (1);
+  if ((darnd and darnd < da[0]) or (daseq and daseq < da[1]))
+    {
+      message := message || sprintf (' : DA is over the limit rnd %d<%d seq %d<%d', darnd, da[0], daseq, da[1]);
+      return 0;
+    }
+  r := 0;
+  if (check_order = 0)
+    gvector_sort (data, 1, 0, 1);
+  if (cnt <> length (data))
+      message := message || ' : result len do not match';
+  foreach (any c in data) do
+    {
+      declare i int;
+      for (i := 0; i < length (c); i := i + 1)
+        {
+	  if (cast (xpath_eval (sprintf ('string (/test/result/row[%d]/col[%d][@dtp=%d])', r + 1, i + 1, __tag(c[i])), xt) as varchar)
+	      <>  cast (c[i] as varchar))
+	    return 0;
+	}
+      r := r + 1;
+    }
+  return 1;
+}
+;
+
+create procedure
+qt_check_dir (in dir varchar)
+{
+  declare ls, inx, f, msg, report any;
+  ls := sys_dirlist (dir, 1);
+  result_names (report);
+  for (inx := 0; inx < length (ls); inx := inx + 1)
+    {
+      if (ls[inx] like '%.xml')
+	{
+	  f := qt_check (dir || '/' || ls[inx], msg);
+	  result (case f when 1 then 'PASSED: ' else '***FAILED: ' end || msg);
+	}
+    }
+}
+;
+
+create procedure
+qt_source (in file varchar)
+{
+  declare t any;
+  t := file_to_string (file);
+  return xtree_doc (t);
+}
+;
+
+create procedure
+qt_xpath_gen (in xt any, in s any := null, in ck int := 0)
+{
+  declare xp, ss any;
+  declare qn, qns, ret varchar;
+  declare i int;
+  if (s is null)
+    {
+      ss := string_output ();
+      http ('/report[', ss);
+      xp := xpath_eval ('/report/*', xt, 0);
+      qt_xpath_gen (xp, ss);
+      http (']', ss);
+      ret := string_output_string (ss);
+      if (ck and xpath_eval (ret, xt) is null)
+        return null;
+      return ret;
+    }
+  qn := 'ts|sel|union|setp|subq|fref|iter|qf|stn';
+  qns := split_and_decode (qn, 0, '\0\0|');
+  ss := s;
+  i := 0;
+  foreach (any x in xt) do
+    {
+      declare n any;
+      x := xml_cut (x);
+      n := cast (xpath_eval ('local-name(.)', x) as varchar);
+--      dbg_obj_print (n);
+      if (n in (qns))
+	{
+	  if (i > 0)
+	    http (sprintf ('[following::%s', n), ss);
+          else
+            http (n, ss);
+	  if (0 and n = 'ts')
+	    {
+	      http (sprintf ('[@key="%s"]', cast (xpath_eval ('@key', x) as varchar)), ss);
+	    }
+          xp := xpath_eval (qn, x, 0);
+	  if (length (xp)) http ('[', ss);
+	  qt_xpath_gen (xp, ss);
+	  if (length (xp)) http (']', ss);
+	  i := i + 1;
+	}
+    }
+  for (i := i - 1; i > 0; i := i - 1)
+    http (']', ss);
+}
+;
+
+
+create procedure DPIPE_DEFINE_SRV (in n varchar, in tb varchar, in k varchar, in srv varchar, in is_upd int, in cproc varchar := null, in cbif varchar := null, in extra any := null)
+{
+  dpipe_define_1 (n, tb, k, srv, is_upd, cproc, cbif, extra);
+  log_text ('dpipe_define_1 (?,?,?,?,?,?,?,?)', n, tb, k, srv, is_upd, cproc, cbif, extra);
+}
+;
+
+create procedure dpipe_define (in n varchar, in tb varchar, in k varchar, in srv varchar, in is_upd int, in cproc varchar := null, in cbif varchar := null, in extra any := null)
+{
+  delete from SYS_DPIPE where DP_NAME = n;
+  insert into SYS_DPIPE (DP_NAME, DP_PART_TABLE, DP_PART_KEY, DP_SRV_PROC, DP_IS_UPD, DP_CALL_PROC, DP_CALL_BIF, DP_EXTRA)
+  values (n, tb, k, srv, is_upd, cproc, cbif, extra);
+  cl_exec ('DB.DBA.DPIPE_DEFINE_SRV (?, ?, ?, ?, ?, ?, ?, ?)',
+        vector (n, tb, k, srv, is_upd, cproc, cbif, extra));
+}
+;
+
+create procedure DPIPE_DROP_SRV (in n varchar)
+{
+  dpipe_drop_1 (n);
+  log_text ('dpipe_drop_1 (?)', n);
+}
+;
+
+create procedure dpipe_drop (in n varchar)
+{
+  delete from SYS_DPIPE where DP_NAME = n;
+  cl_exec ('DB.DBA.DPIPE_DROP_SRV (?)', vector (n));
+}
+;
+

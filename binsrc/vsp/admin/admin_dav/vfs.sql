@@ -8,7 +8,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --  
---  Copyright (C) 1998-2013 OpenLink Software
+--  Copyright (C) 1998-2014 OpenLink Software
 --  
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -1827,7 +1827,7 @@ create procedure WS.WS.VFS_EXTRACT_RDF (in _host varchar, in _root varchar, in _
 
   _graph := get_keyword ('rdf-graph', opts);
   if (length (_graph) = 0)
-  _graph := WS.WS.MAKE_URL (_host, _start_path);
+    _graph := WS.WS.MAKE_URL (_host, url);
   _base := WS.WS.MAKE_URL (_host, url);
 
   commit work;

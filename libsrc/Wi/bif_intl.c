@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -300,7 +300,7 @@ literal_as_utf8 (encoding_handler_t * enc, caddr_t literal, int len)
 }
 
 caddr_t
-charset_recode_from_named_to_named (query_instance_t *qi, caddr_t narrow, const char *cs1_uppercase, const char *cs2_uppercase, int *res_is_new_ret, caddr_t *err_ret)
+charset_recode_from_named_to_named (caddr_t narrow, const char *cs1_uppercase, const char *cs2_uppercase, int *res_is_new_ret, caddr_t *err_ret)
 {
   wcharset_t *cs1, *cs2;
   int bom_skip_offset = 0;
@@ -318,18 +318,7 @@ charset_recode_from_named_to_named (query_instance_t *qi, caddr_t narrow, const 
     cs1 = CHARSET_WIDE;
   if (cs2_uppercase && !cs2 && !strcmp (cs2_uppercase, "_WIDE_"))
     cs2 = CHARSET_WIDE;
-  if (cs1_uppercase && !cs1 && !strcmp (cs1_uppercase, "_WS_"))
-    {
-      cs1 = ((NULL != qi) ? WS_CHARSET (qi->qi_client->cli_ws, qi) : NULL);
-      if (NULL == cs1)
-        cs1 = default_charset;
-    }
-  if (cs2_uppercase && !cs2 && !strcmp (cs2_uppercase, "_WS_"))
-    {
-      cs2 = ((NULL != qi) ? WS_CHARSET (qi->qi_client->cli_ws, qi) : NULL);
-      if (NULL == cs2)
-        cs2 = default_charset;
-    }
+
   if (!cs1 && cs1_uppercase && box_length (cs1_uppercase) > 1)
     {
       if (!stricmp (cs1_uppercase, "UTF-16") && box_length (narrow) > 2
@@ -442,7 +431,7 @@ bif_charset_recode (caddr_t *qst, caddr_t *err_ret, state_slot_t ** args)
 
   cs1_uname = cs1_name ? sqlp_box_upcase (cs1_name) : NULL;
   cs2_uname = cs2_name ? sqlp_box_upcase (cs2_name) : NULL;
-  res = charset_recode_from_named_to_named ((query_instance_t *)qst, narrow, cs1_uname, cs2_uname, &res_is_new, &err);
+  res = charset_recode_from_named_to_named (narrow, cs1_uname, cs2_uname, &res_is_new, &err);
   dk_free_box (cs1_uname); dk_free_box (cs2_uname);
   if (NULL != err)
     {
@@ -1154,27 +1143,27 @@ bif_langmatches_pct_http (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args
 void
 bif_intl_init (void)
 {
-  bif_define_typed ("collation__define", bif_collation__define, &bt_integer);
-  bif_define_typed ("charset__define", bif_charset_define, &bt_integer);
-  bif_define_typed ("charset_canonical_name", bif_charset_canonical_name, &bt_integer);
-  bif_define_typed ("complete_collation_name", bif_complete_collation_name, &bt_varchar);
-  bif_define_typed ("collation_order_string", bif_collation_order_string, &bt_varchar);
-  bif_define_typed ("current_charset", bif_current_charset, &bt_varchar);
-  bif_define_typed ("charset_recode", bif_charset_recode, &bt_varchar);
-  bif_define_typed ("bf_text_to_UTF8", bif_bf_text_to_UTF8, &bt_varchar);
-  bif_define_typed ("bf_text_to_UTF8_or_wide", bif_bf_text_to_UTF8_or_wide, &bt_varchar);
+  bif_define_ex ("collation__define", bif_collation__define, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("charset__define", bif_charset_define, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("charset_canonical_name", bif_charset_canonical_name, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("complete_collation_name", bif_complete_collation_name, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("collation_order_string", bif_collation_order_string, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("current_charset", bif_current_charset, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("charset_recode", bif_charset_recode, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("bf_text_to_UTF8", bif_bf_text_to_UTF8, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("bf_text_to_UTF8_or_wide", bif_bf_text_to_UTF8_or_wide, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define ("uname", bif_uname);
   bif_define ("__uname", bif_quick_uname);
   bif_define ("charsets_list", bif_charsets_list);
-  bif_define_typed ("unicode_toupper", bif_unicode_toupper, &bt_integer);
-  bif_define_typed ("unicode_tolower", bif_unicode_tolower, &bt_integer);
+  bif_define_ex ("unicode_toupper", bif_unicode_toupper, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("unicode_tolower", bif_unicode_tolower, BMD_RET_TYPE, &bt_integer, BMD_DONE);
   bif_define ("unicode_char_properties", bif_unicode_char_properties);
-  bif_define_typed ("iswidestring", bif_iswidestring, &bt_integer);
+  bif_define_ex ("iswidestring", bif_iswidestring, BMD_RET_TYPE, &bt_integer, BMD_DONE);
 #ifndef NDEBUG
   bif_define ("set_utf8_output", bif_set_utf8_output);
 #endif
   bif_define ("dbg_assert_encoding", bif_dbg_assert_encoding);
   bif_define ("__dbg_set_lh_xany_normalization_flags", bif_dbg_set_lh_xany_normalization_flags);
-  bif_define_typed ("langmatches_pct_http", bif_langmatches_pct_http, &bt_integer);
+  bif_define_ex ("langmatches_pct_http", bif_langmatches_pct_http, BMD_RET_TYPE, &bt_integer, BMD_DONE);
 }
 

@@ -4,7 +4,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2013 OpenLink Software
+--  Copyright (C) 1998-2014 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -440,10 +440,20 @@ DAV_GET_PARENT (in id any, in st char(1), in path varchar) returns any
 
 
 create function
-DAV_DIR_SINGLE_INT (in did any, in st char (0), in path varchar, in auth_uname varchar := null, in auth_pwd varchar := null, in auth_uid integer := null) returns any
+DAV_DIR_SINGLE_INT (
+  in did any,
+  in st char (0),
+  in path varchar,
+  in auth_uname varchar := null,
+  in auth_pwd varchar := null,
+  in auth_uid integer := null,
+  in extern integer := 1) returns any
 {
-  declare rc integer;
   -- dbg_obj_princ ('DAV_DIR_SINGLE_INT (', did, st, path, auth_uname, auth_pwd, auth_uid, ')');
+  declare rc integer;
+
+  if (extern)
+    {
   rc := DAV_AUTHENTICATE (did, st, '1__', auth_uname, auth_pwd, auth_uid);
   if (rc < 0)
     {
@@ -458,6 +468,7 @@ DAV_DIR_SINGLE_INT (in did any, in st char (0), in path varchar, in auth_uname v
     }
   if (auth_uid is null)
     auth_uid := rc;
+    }
   if (isarray (did))
     {
       if ('R' = st)
@@ -1652,10 +1663,12 @@ DAV_AUTHENTICATE (in id any, in what char(1), in req varchar, in a_uname varchar
   if (DAV_AUTHENTICATE_SSL (id, what, null, req, a_uid, a_gid, _perms, webid))
     return a_uid;
 
-  if (DAV_AUTHENTICATE_WITH_SESSION_ID (id, what, null, req, a_uid, a_gid, _perms, serviceId))
-    return a_uid;
+  if (__proc_exists ('VAL.DBA.authentication_details_for_connection') is not null) {
+    if (DAV_AUTHENTICATE_WITH_VAL (id, what, null, req, a_uid, a_gid, _perms, serviceId))
+      return a_uid;
+  }
 
-  -- Both DAV_AUTHENTICATE_SSL and DAV_AUTHENTICATE_WITH_SESSION_ID only check IRI ACLs
+  -- Both DAV_AUTHENTICATE_SSL and DAV_AUTHENTICATE_WITH_VAL only check IRI ACLs
   -- However, service ids may map to ODS user accounts. This is what we check here
   a_uid := -1;
 
@@ -1802,9 +1815,11 @@ DAV_AUTHENTICATE_HTTP (in id any, in what char(1), in req varchar, in can_write_
         {
           return a_uid;
         }
-        if (DAV_AUTHENTICATE_WITH_SESSION_ID (id, what, null, req, a_uid, a_gid, _perms, serviceId))
-        {
-          return a_uid;
+        if (__proc_exists ('VAL.DBA.authentication_details_for_connection') is not null) {
+          if (DAV_AUTHENTICATE_WITH_VAL (id, what, null, req, a_uid, a_gid, _perms, serviceId))
+          {
+            return a_uid;
+          }
         }
 
         -- Normalize the service variables for error handling in VAL
@@ -1813,7 +1828,7 @@ DAV_AUTHENTICATE_HTTP (in id any, in what char(1), in req varchar, in can_write_
           serviceId := webid;
         }
 
-        -- Both DAV_AUTHENTICATE_SSL and DAV_AUTHENTICATE_WITH_SESSION_ID only check IRI ACLs
+        -- Both DAV_AUTHENTICATE_SSL and DAV_AUTHENTICATE_WITH_VAL only check IRI ACLs
         -- However, service ids may map to ODS user accounts. This is what we check here
         a_uid := -1;
 
@@ -1929,35 +1944,12 @@ DAV_AUTHENTICATE_SSL_ITEM (
 create function
 DAV_AUTHENTICATE_SSL_CONDITION () returns integer
 {
-  if (is_https_ctx () and (__proc_exists ('SIOC.DBA.get_graph') is not null))
+  if (is_https_ctx () and (__proc_exists ('SIOC.DBA.get_graph') is not null) and client_attr ('client_certificate') <> 0)
     return 1;
 
   return 0;
 }
 ;
-
--- redundant code muste be deleted after move the procedure WEBID_AUTH_GEN_2 in DAV!!!
--- START REDUNDANT CODE
-create function DAV_WEBID_QR (in gr varchar, in uri varchar)
-{
-    return sprintf ('sparql
-    define input:storage ""
-    define input:same-as "yes"
-    prefix cert: <http://www.w3.org/ns/auth/cert#>
-    prefix rsa: <http://www.w3.org/ns/auth/rsa#>
-    select (str (?exp)) (str (?mod))
-    from <%S>
-    where
-    {
-      { ?id cert:identity <%S> ; rsa:public_exponent ?exp ; rsa:modulus ?mod .  }
-      union
-      { ?id cert:identity <%S> ; rsa:public_exponent ?exp1 ; rsa:modulus ?mod1 . ?exp1 cert:decimal ?exp . ?mod1 cert:hex ?mod . }
-      union
-      { <%S> cert:key ?key . ?key cert:exponent ?exp . ?key cert:modulus ?mod .  }
-    }', gr, uri, uri, uri);
-}
-;
--- END REDUNDANT CODE
 
 
 create function
@@ -1996,15 +1988,22 @@ DAV_AUTHENTICATE_SSL_WEBID (
   inout webid varchar,
   inout webidGraph varchar)
 {
-  declare cert, vtype any;
+  webid := connection_get ('__webid');
+  webidGraph := connection_get ('__webidGraph');
+  if (isnull (webid))
+  {
+    declare cert, fing, vtype any;
 
-  webid := null;
-  if (__proc_exists ('DB.DBA.WEBID_AUTH_GEN_2') is not null)
-    {
-      cert := client_attr ('client_certificate');
-      if (not DB.DBA.WEBID_AUTH_GEN_2 (cert, 0, null, 1, 0, webid, webidGraph, 0, vtype))
-        webid := null;
-    }
+    cert := client_attr ('client_certificate');
+    fing := get_certificate_info (6, cert);
+    webidGraph := 'http:' || replace (fing, ':', '');
+    if (not DB.DBA.WEBID_AUTH_GEN_2 (cert, 0, null, 1, 1, webid, webidGraph, 0, vtype))
+      webid := null;
+  }
+  connection_set ('__webid', coalesce (webid, ''));
+  connection_get ('__webidGraph', webidGraph);
+
+  webid := case when webid = '' then null else webid end;
   return webid;
 }
 ;
@@ -2025,6 +2024,8 @@ DAV_CHECK_ACLS_INTERNAL (
   declare _filterMode, _filterValue, _filterCriteriaValue, _mode, _filter, _criteria, _operand, _condition, _value, _pattern, _statement, _params any;
   declare _sql, _state, _msg, _sqlParams, _meta, _rows any;
 
+  if (not isnull (webid))
+  {
   for (
     sparql
     define input:storage ""
@@ -2067,7 +2068,6 @@ DAV_CHECK_ACLS_INTERNAL (
                {
                  ?p3 rdf:type foaf:Group ;
                  foaf:member `iri(?:webid)` .
-                 filter (?g like (?:grpGraph)) .
                }
              }
            }
@@ -2105,6 +2105,7 @@ DAV_CHECK_ACLS_INTERNAL (
     IRIs[I] := vector_concat (IRIs[I], vector (tmp));
 
     _skip:;
+  }
   }
 
 
@@ -2209,37 +2210,26 @@ DAV_AUTHENTICATE_SSL (
   declare rc integer;
   declare webidGraph any;
 
-  if (not DAV_AUTHENTICATE_SSL_CONDITION ())
-    return 0;
-
   rc := 0;
-  _perms := '___';
-  DAV_AUTHENTICATE_SSL_ITEM (id, what, path);
+  if (DAV_AUTHENTICATE_SSL_CONDITION ())
+  {
+    DAV_AUTHENTICATE_SSL_ITEM (id, what, path);
 
-  webid := null;
-  webidGraph := 'http://local.virt/ods/' || uuid ();
-  DB.DBA.DAV_AUTHENTICATE_SSL_WEBID (webid, webidGraph);
-  if (isnull (webid))
-    return 0;
+    webidGraph := null;
+    DB.DBA.DAV_AUTHENTICATE_SSL_WEBID (webid, webidGraph);
 
-  rc := DAV_CHECK_ACLS (id, webid, webidGraph, what, path, req, a_uid, a_gid, _perms);
-
-  if (not is_empty_or_null (webidGraph))
-    DB.DBA.SPARUL_CLEAR (webidGraph, 0, 0, silent=>1);
+    _perms := '___';
+    rc := DAV_CHECK_ACLS (id, webid, webidGraph, what, path, req, a_uid, a_gid, _perms);
+  }
   return rc;
 }
 ;
 
 --!
--- Try to authenticate via a session id which is stored in query parameter "sid".
--- A session id can be mapped to an actual user account or to a third-party account.
--- This includes WebID, Facebook, BrowserID, etc... anything VAL supports.
---
--- In the latter case the service id which the session is connected to is checked
--- against the ACL rules of the resource in question.
+-- Get authentication information via VAL and check ACLs.
 --/
 create function
-DAV_AUTHENTICATE_WITH_SESSION_ID (
+DAV_AUTHENTICATE_WITH_VAL (
   in id any,
   in what char(1),
   in path varchar,
@@ -2249,23 +2239,26 @@ DAV_AUTHENTICATE_WITH_SESSION_ID (
   inout _perms varchar,
   out serviceId varchar) returns integer
 {
-  --dbg_printf('DAV_AUTHENTICATE_WITH_SESSION_ID (%d, %s, %s, ...)', id, what, path);
-  declare sid varchar;
+  --dbg_printf('DAV_AUTHENTICATE_WITH_VAL (%d, %s, %s, ...)', id, what, path);
+  declare val_sid, val_sidRealm varchar;
+  declare val_uname varchar;
+  declare val_isRealUser integer;
 
-  -- Extract the session id from the query parameters
-  sid :=  http_param ('sid');
-  if (isnull (sid))
-    return 0;
-
-  serviceId := null;
-
-  -- Map the sid to a 3rd-party account
-  declare exit handler for not found {
+  declare exit handler for sqlstate '*' {
     return 0;
   };
 
-  -- Get the service id which created the session
-  select VS_UID into serviceId from DB.DBA.VSPX_SESSION where VS_SID = sid;
+  val_sidRealm := null;
+  if (not VAL.DBA.authentication_details_for_connection (
+        val_sid,
+        serviceId,
+        val_uname,
+        val_isRealUser,
+        val_sidRealm,
+        'sid')
+     ) {
+    return 0;
+  }
 
   -- Finally verify the ACL rules
   DAV_AUTHENTICATE_SSL_ITEM (id, what, path);
@@ -2840,7 +2833,7 @@ create procedure RDF_SINK_FUNC (
       rdf_graph_resource_id := WS.WS.GETID ('R');
       insert into WS.WS.SYS_DAV_RES (RES_ID, RES_NAME, RES_COL, RES_OWNER, RES_GROUP, RES_PERMS, RES_CR_TIME, RES_MOD_TIME, RES_TYPE, RES_CONTENT)
       values (rdf_graph_resource_id, rdf_graph_resource_name, c_id, ouid, ogid, '111101101NN', now (), now (), 'text/xml', '');
-      DB.DBA.DAV_PROP_SET_INT (rdf_graph_resource_path, 'redirectref', sprintf ('http://%s/sparql?default-graph-uri=%U&query=%U&format=%U', host, rdf_graph,
+      DB.DBA.DAV_PROP_SET_INT (rdf_graph_resource_path, 'redirectref', sprintf ('%s/sparql?default-graph-uri=%U&query=%U&format=%U', host, rdf_graph,
       'CONSTRUCT { ?s ?p ?o} WHERE {?s ?p ?o}', 'application/rdf+xml'), null, null, 0, 0, 1);
     }
   }
@@ -2882,7 +2875,7 @@ create procedure RDF_SINK_UPLOAD (
         file_delete (tmp_file, 1);
         return 0;
       };
-      rdf_graph2 := 'http://local.virt' || path;
+      rdf_graph2 := WS.WS.DAV_IRI (path);
       string_to_file (tmp_file, _content, -2);
       lst := unzip_list (tmp_file);
       foreach (any x in lst) do
@@ -2893,7 +2886,7 @@ create procedure RDF_SINK_UPLOAD (
           content := unzip_file (tmp_file, fname);
           http_dav_url (fname, null, ss);
           fname := string_output_string (ss);
-          item_graph := 'http://local.virt' || path || '/' || fname;
+          item_graph := WS.WS.DAV_IRI (path || '/' || fname);
           RDF_SINK_UPLOAD (concat (path, '/', fname), content, DAV_GUESS_MIME_TYPE_BY_NAME (fname), rdf_graph, rdf_base, rdf_sponger, rdf_cartridges, rdf_metaCartridges, 0);
           SPARQL insert in graph ?:rdf_graph2 { ?s ?p ?o } where { graph `iri(?:item_graph)` { ?s ?p ?o } };
           SPARQL clear graph ?:item_graph;
@@ -2917,7 +2910,7 @@ create procedure RDF_SINK_UPLOAD (
     }
   -- dbg_obj_print ('RDF_SINK_UPLOAD (', length (content), type, rdf_graph, rdf_graph2, rdf_sponger, rdf_cartridges, rdf_metaCartridges, ')');
   rdf_iri := WS.WS.DAV_IRI (path);
-  rdf_graph2 := 'http://local.virt' || path;
+  rdf_graph2 := WS.WS.DAV_IRI (path);
   if (is_empty_or_null (rdf_base))
   {
     rdf_base2 := WS.WS.DAV_HOST () || path;
@@ -3113,7 +3106,7 @@ create procedure RDF_SINK_CLEAR (
   if (path like '%.gz')
     path := regexp_replace (path, '\.gz\x24', '');
 
-  rdf_graph2 := 'http://local.virt' || path;
+  rdf_graph2 := WS.WS.DAV_IRI (path);
   SPARQL delete from graph ?:rdf_graph { ?s ?p ?o } where { graph `iri(?:rdf_graph2)` { ?s ?p ?o } };
   SPARQL clear graph ?:rdf_graph2;
   if (exists (select top 1 1 from DB.DBA.RDF_GRAPH_GROUP where RGG_IRI = rdf_group))
@@ -3185,7 +3178,7 @@ create procedure DAV_DELETE_INT (
     type := (select RES_TYPE from WS.WS.SYS_DAV_RES where RES_ID = id);
     if (type = 'text/turtle')
     {
-      graph := WS.WS.DAV_HOST () || path;
+      graph := WS.WS.DAV_IRI (path);
       SPARQL clear graph ?:graph;
     }
 
@@ -4496,7 +4489,7 @@ DAV_PROP_GET_INT (
       if (idx >= 0)
         {
           declare dirsingle any;
-          dirsingle := DAV_DIR_SINGLE_INT (id, what, 'fake', auth_uname, auth_pwd, auth_uid);
+          dirsingle := DAV_DIR_SINGLE_INT (id, what, 'fake', auth_uname, auth_pwd, auth_uid, extern);
           if (isarray (dirsingle))
           {
             if ((propname = ':addeddate') and (length (dirsingle) <= 11))
@@ -7545,3 +7538,47 @@ insert replacing DB.DBA.SYS_SCHEDULED_EVENT (SE_NAME, SE_START, SE_SQL, SE_INTER
   values('WebDAV Scheduler', now(), 'DB.DBA.DAV_SCHEDULER ()', 5)
 ;
 
+-------------------------------------------------------------------------------
+--
+-- RDF SINK Update Internal Graph Name
+--
+-------------------------------------------------------------------------------
+create procedure DB.DBA.DAV_RDF_SINK_UPDATE (
+  in queue_id integer := null)
+{
+  -- dbg_obj_princ ('DB.DBA.DAV_RDF_SINK_UPDATE (', queue_id, ')');
+  declare path, old_graph, new_graph varchar;
+  declare old_mode int;
+
+  if (registry_get ('__dav_rdf_sink_update') = '1')
+    return;
+
+  if (isnull (queue_id))
+  {
+    DB.DBA.DAV_QUEUE_ADD ('RDF_SINK', 0, 'DB.DBA.DAV_RDF_SINK_UPDATE', vector ());
+    DB.DBA.DAV_QUEUE_INIT ();
+    return;
+  }
+
+  old_mode := log_enable (3, 1);
+  for (select PROP_PARENT_ID from WS.WS.SYS_DAV_PROP where PROP_TYPE = 'C' and PROP_NAME = 'virt:rdfSink-graph') do
+  {
+    path := DB.DBA.DAV_SEARCH_PATH (PROP_PARENT_ID, 'C');
+    for (select RES_FULL_PATH from WS.WS.SYS_DAV_RES where RES_FULL_PATH like (path || '%')) do
+    {
+      old_graph := 'http://local.virt' || RES_FULL_PATH;
+      new_graph := WS.WS.DAV_IRI (RES_FULL_PATH);
+      SPARQL insert in graph ?:new_graph { ?s ?p ?o } where { graph `iri(?:old_graph)` { ?s ?p ?o } };
+      SPARQL clear graph ?:old_graph;
+    }
+  }
+
+  log_enable (old_mode, 1);
+  registry_set ('__dav_rdf_sink_update', '1');
+  DB.DBA.DAV_QUEUE_UPDATE_STATE (queue_id, 2);
+}
+;
+
+--!AFTER
+DB.DBA.DAV_RDF_SINK_UPDATE ()
+;

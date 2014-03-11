@@ -1,14 +1,14 @@
 --
 --  selt5.sql
 --
---  $Id$
+--  $Id: selt5.sql,v 1.4.10.1 2013/01/02 16:14:56 source Exp $
 --
 --  checkpoint errors #1.
 --  
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --  
---  Copyright (C) 1998-2013 OpenLink Software
+--  Copyright (C) 1998-2014 OpenLink Software
 --  
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -34,3 +34,4 @@ create procedure p (in q int)
 set autocommit on;
 select * from t1 order by p (fi2);
 commit work;
+

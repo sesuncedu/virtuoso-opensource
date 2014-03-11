@@ -1,10 +1,10 @@
 --  
---  $Id$
+--  $Id: trdf.sql,v 1.4.10.1 2013/01/02 16:15:19 source Exp $
 --  
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --  
---  Copyright (C) 1998-2013 OpenLink Software
+--  Copyright (C) 1998-2014 OpenLink Software
 --  
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -182,18 +182,18 @@ rdf ('John', 'isa', url ('person'));
 
 select thi.o  from rdf per, rdf thi where thi.s = url ('thing') and thi.p = url ('pred')
   and thi.o = per.s and per.o = url ('person') and per.p = url ('isa') option (sparql);
-ECHO BOTH $IF $EQU $ROWCNT 2 "PASSED" "***FAILED";
-ECHO BOTH "  inx int of  any and IRI_ID in sparql mode ok 1.\n";
+echo both $if $equ $rowcnt 2 "PASSED" "***FAILED";
+echo both "  inx int of  any and IRI_ID in sparql mode ok 1.\n";
 
 
 
 select count (*) from sys_keys where key_id = 'qq' option (sparql);
-ECHO BOTH $IF $EQU $LAST[1] 0 "PASSED" "***FAILED";
-ECHO BOTH " cast error ignore 1.\n";
+echo both $if $equ $last[1] 0 "PASSED" "***FAILED";
+echo both " cast error ignore 1.\n";
 
 select count (*) from sys_keys where key_id = 'qq';
-ECHO BOTH $IF $EQU $SQLSTATE 22005   "PASSED" "***FAILED";
-ECHO BOTH " cast error ignore 2.\n";
+echo both $if $equ $sqlstate 22005   "PASSED" "***FAILED";
+echo both " cast error ignore 2.\n";
 
 
 

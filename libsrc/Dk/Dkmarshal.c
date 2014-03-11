@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -344,10 +344,34 @@ static void *
 box_read_flags (dk_session_t * session, dtp_t dtp)
 {
   uint32 flags = (uint32) read_long (session);
-  char *string = scan_session_boxing (session);
-  if (IS_BOX_POINTER (string))
-    box_flags (string) = flags;
-  return (void *) string;
+  if (flags & BF_UNAME_AS_STRING)
+    {
+      dtp_t next_char = session_buffered_read_char (session);
+      int length;
+      char *res;
+      switch (next_char)
+        {
+        case DV_SHORT_STRING_SERIAL: length = (int) session_buffered_read_char (session); break;
+        case DV_LONG_STRING: length = (size_t) read_long (session); break;
+        default: box_read_error (session, next_char); break;
+        }
+      MARSH_CHECK_LENGTH (length);
+      res = box_dv_ubuf_or_null (length);
+      MARSH_CHECK_BOX (res);
+      session_buffered_read (session, res, length);
+      res[length] = '\0';
+      /* box flags are not set. */
+      return box_dv_uname_from_ubuf (res);
+    }
+  else
+    {
+      char *string = scan_session_boxing (session);
+      if (IS_BOX_POINTER (string))
+        {
+          box_flags (string) = flags;
+        }
+      return (void *) string;
+    }
 }
 
 
@@ -391,7 +415,7 @@ read_int (dk_session_t *session)
   if (dtp == DV_SHORT_INT)
     return read_short_int (session);
   else if (DV_LONG_INT == dtp)
-    return read_long (session);
+  return read_long (session);
   else if (DV_INT64 == dtp)
     return read_int64 (session);
 
@@ -544,7 +568,7 @@ rb_id_deserialize (dk_session_t * ses, dtp_t dtp)
     n = read_long (ses);
   return (void*)rbb_from_id (n);
 }
- 
+
 
 static void *
 rb_ext_deserialize (dk_session_t * ses, dtp_t flags)
@@ -562,6 +586,7 @@ rb_ext_deserialize (dk_session_t * ses, dtp_t flags)
       rb->rb_type = read_short (ses);
       rb->rb_lang = RDF_BOX_DEFAULT_LANG;
     }
+  rb_dt_lang_check(rb);
   if (flags & RBS_64)
     rb->rb_ro_id = read_int64 (ses);
   else
@@ -573,7 +598,7 @@ rb_ext_deserialize (dk_session_t * ses, dtp_t flags)
     }
   return (void*)rb;
 }
- 
+
 
 static void *
 rb_deserialize (dk_session_t * ses, dtp_t dtp)
@@ -627,6 +652,7 @@ rb_deserialize (dk_session_t * ses, dtp_t dtp)
     rb->rb_lang = read_short (ses);
   else
     rb->rb_lang = RDF_BOX_DEFAULT_LANG;
+  rb_dt_lang_check(rb);
   if (flags & RBS_CHKSUM)
     ((rdf_bigbox_t *) rb)->rbb_box_dtp = session_buffered_read_char (ses);
   if ((RDF_BOX_DEFAULT_TYPE != rb->rb_type) && (RDF_BOX_DEFAULT_LANG != rb->rb_lang))
@@ -1073,6 +1099,29 @@ print_string (char *string, dk_session_t * session)
   session_buffered_write (session, string, length);
 }
 
+void
+print_uname (char *string, dk_session_t * session)
+{
+  /* There will be a zero at the end. Do not send the zero. */
+  uint32 flags = box_flags (string) | BF_IRI | BF_UNAME_AS_STRING;
+  size_t length = box_length (string) - 1;
+  if (flags && (!box_flags_serial_test_hook || box_flags_serial_test_hook (session)))
+    {
+      session_buffered_write_char (DV_BOX_FLAGS, session);
+      print_long (flags, session);
+    }
+  if (length < 256)
+    {
+      session_buffered_write_char (DV_SHORT_STRING_SERIAL, session);
+      session_buffered_write_char ((char) length, session);
+    }
+  else
+    {
+      session_buffered_write_char (DV_STRING, session);
+      print_long ((long) length, session);
+    }
+  session_buffered_write (session, string, length);
+}
 
 void
 print_ref_box (char *string, dk_session_t * session)
@@ -1187,8 +1236,10 @@ print_object2 (void *object, dk_session_t * session)
 
 	case DV_STRING:
 	case DV_C_STRING:
-	case DV_UNAME:
 	  print_string ((char *) object, session);
+	  break;
+	case DV_UNAME:
+	  print_uname ((char *) object, session);
 	  break;
 	case DV_SINGLE_FLOAT:
 	  print_float (*(float *) object, session);

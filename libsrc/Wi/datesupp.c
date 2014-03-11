@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -26,6 +26,7 @@
  */
 
 #include "datesupp.h"
+#include "wi.h"
 #include "CLI.h"
 #include "util/strfuns.h"
 #include "sqlfn.h"
@@ -129,6 +130,7 @@ dt_day_ck (int day, int month, int year, int *err, const char **err_str)
 #endif
 
 
+#ifdef DATE2NUM_DEBUG
 /*
  *  Converts a given number of days of a year to a standard date
  *
@@ -164,7 +166,7 @@ yearday2date (int yday, const int is_leap_year, int *month, int *day)
 
   return 1;
 }
-
+#endif
 
 /*
  *  Computes the absolute number of days of the given date since 0001/01/01,
@@ -1433,6 +1435,38 @@ dt_make_day_zero (char *dt)
   DT_SET_DAY (dt, DAY_ZERO);
   DT_SET_DT_TYPE (dt, DT_TYPE_TIME);
 }
+
+
+unsigned int64
+dt_seconds (caddr_t dt1)
+{
+  return ((unsigned int64)DT_DAY (dt1)) * 24 * 60 * 60 + DT_HOUR (dt1) * 60 * 60 + DT_MINUTE (dt1) * 60 + DT_SECOND (dt1);
+}
+
+
+void
+dt_print (caddr_t dt)
+{
+  char str[100];
+  dt_to_string (dt, str, sizeof (str));
+		printf ("%s\n", str);
+}
+
+
+int
+dt_compare (caddr_t dt1, caddr_t dt2)
+{
+  int inx;
+  for (inx = 0; inx < DT_COMPARE_LENGTH; inx++)
+    {
+      if (dt1[inx] < dt2[inx])
+	return DVC_LESS;
+      else if (dt1[inx] > dt2[inx])
+	return DVC_GREATER;
+    }
+  return DVC_MATCH;
+}
+
 
 #ifdef DEBUG
 void

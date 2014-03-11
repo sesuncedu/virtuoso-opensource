@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -87,6 +87,8 @@ struct dk_session_s
 
   /*! max msecs to block on a read */
   timeout_t 			dks_read_block_timeout;
+  /*! max msecs to block on a write */
+  timeout_t 			dks_write_block_timeout;
   /*! Is this a client or server initiated session */
   char 				dks_is_server;
   char 				dks_cluster_flags;
@@ -857,6 +859,7 @@ void print_raw_double (double n, dk_session_t * session);
 void print_int (long n, dk_session_t * session);
 void dks_array_head (dk_session_t * ses, int n_elements, dtp_t type);
 void print_string (char *string, dk_session_t * session);
+void print_uname (char *string, dk_session_t * session);
 void print_ref_box (char *string, dk_session_t * session);
 void PrpcSetWriter (dtp_t dtp, ses_write_func f);
 void print_object (caddr_t object, dk_session_t * session, printer_ext_func extension, caddr_t ea);
@@ -875,6 +878,8 @@ int is_protocol (session_t * ses, int proto);
 int check_inputs (TAKE_G timeout_t * timeout, int is_recursive);
 int read_service_request (dk_session_t * ses);
 EXE_EXPORT (dk_session_t *, dk_session_allocate, (int sesclass));
+dk_session_t * dk_session_alloc_box (int sesclass, int in_len);
+
 void timeout_round (TAKE_G dk_session_t * ses);
 void PrpcSuckAvidly (int mode);
 void PrpcAddAnswer (caddr_t result, int ret_type, int is_partial, int flush);
@@ -988,7 +993,7 @@ extern dk_mutex_t *dk_alloc_reserve_mutex;
 extern volatile void *dk_alloc_reserve;	/* Don't access it directly. */
 extern int dk_alloc_reserve_maxthreads;
 extern volatile int dk_alloc_reserve_mode;
-#define DK_ALLOC_ON_RESERVE 		(dk_alloc_reserve_mode != DK_ALLOC_RESERVE_DISABLED && NULL == dk_alloc_reserve)
+#define DK_ALLOC_ON_RESERVE 		((dk_alloc_reserve_mode != DK_ALLOC_RESERVE_DISABLED && NULL == dk_alloc_reserve) || MP_LARGE_SOFT_CK)
 void dk_alloc_set_reserve_mode (int mode);
 #else
 #define DK_ALLOC_ON_RESERVE 		0
@@ -999,7 +1004,7 @@ void *dk_alloc_reserve_malloc (size_t size, int gpf_if_not);
 
 #ifndef NO_THREAD
 #define BURST_STOP_TIMEOUT 		1000		   /* 1 sec to switch off burst mode */
-extern long time_now_msec;
+extern uint32 time_now_msec;
 void dks_stop_burst_mode (dk_session_t * ses);
 #endif
 

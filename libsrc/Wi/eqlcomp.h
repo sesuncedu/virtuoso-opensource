@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -58,8 +58,11 @@ stmt_compilation_t *qr_describe_1 (query_t * qr, caddr_t *err_ret, client_connec
 caddr_t str_to_sym (const char *str);
 
 void ts_free (table_source_t * ts);
-
 void sel_free (select_node_t * sel);
+void hash_source_free (hash_source_t * hs);
+
+#define SSL_ADD_TO_QR(sl) \
+  dk_set_push (&cc->cc_super_cc->cc_query->qr_state_map, (void *) sl);
 
 state_slot_t * ssl_copy (comp_context_t * cc, state_slot_t * org);
 
@@ -72,6 +75,7 @@ state_slot_t *ssl_new_column (comp_context_t * cc, const char *cr_name,
 
 state_slot_t *ssl_new_inst_variable (comp_context_t * cc, const char *name,
     dtp_t dtp);
+state_slot_t * ssl_new_vec (comp_context_t * cc, const char *name, dtp_t dtp);
 state_slot_t * ssl_new_tree (comp_context_t * cc, const char *name);
 
 extern state_slot_t *ssl_new_constant (comp_context_t * cc, caddr_t val);
@@ -204,5 +208,9 @@ void clb_free (cl_buffer_t * clb);
 void dsr_free (data_source_t * x);
 void qn_free (data_source_t * qn);
 void cl_order_free (clo_comp_t ** ord);
+void sp_list_free (dk_set_t sps);
+void ks_free (key_source_t *ks);
+void ik_array_free (ins_key_t ** iks);
+void ssl_sort_by_index (state_slot_t ** ssls);
 
 #endif /* __EQLCOMP_H_010520 */

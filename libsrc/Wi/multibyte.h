@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -100,9 +100,6 @@ wcharset_t *sch_name_to_charset (const char *name);
 size_t wide_as_utf8_len (caddr_t _wide);
 caddr_t box_wide_string (const wchar_t *wstr);
 caddr_t box_wide_nchars (const wchar_t *wstr, size_t len);
-
-extern wcharset_t *charset_native_for_box (ccaddr_t box, int expected_bf_if_zero);
-
 
 #ifdef UTF8_DEBUG
 #define ASSERT_BOX_ENC_MATCHES_BF(box,expected_bf_if_zero) assert_box_enc_matches_bf (__FILE__, __LINE__, (box), (expected_bf_if_zero))

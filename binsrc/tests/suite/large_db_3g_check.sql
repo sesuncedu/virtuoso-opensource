@@ -1,14 +1,14 @@
 --
 --  large_db_check.sql
 --
---  $Id$
+--  $Id: large_db_3g_check.sql,v 1.3.10.1 2013/01/02 16:14:41 source Exp $
 --
 --  Large DB test
 --  
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --  
---  Copyright (C) 1998-2013 OpenLink Software
+--  Copyright (C) 1998-2014 OpenLink Software
 --  
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -37,3 +37,4 @@ ECHO BOTH ": Travers all trees\n";
 select check_sum();
 ECHO BOTH $IF $EQU $LAST[1] "373" "PASSED" "***FAILED";
 ECHO BOTH " CHECK SUM:" $LAST[1] "\n"
+

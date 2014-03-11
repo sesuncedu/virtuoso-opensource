@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -319,6 +319,8 @@ find_service (char *name)
 {
   USE_GLOBAL
   service_t * srv = services;
+  if (!(IS_BOX_POINTER (name) && DV_STRING == box_tag (name)))
+    return NULL;
   while (srv)
     {
       if (0 == strcmp (srv->sr_name, name))
@@ -361,6 +363,7 @@ get_free_thread (TAKE_G dk_session_t * for_ses)
     {
       if (for_ses)
 	for_ses->dks_n_threads++;
+      return dkt;
     }
   else
     {
@@ -368,7 +371,6 @@ get_free_thread (TAKE_G dk_session_t * for_ses)
 	{
 	  dkt = dk_thread_alloc ();
 	  future_thread_count++;
-
 	  if (for_ses)
 	    for_ses->dks_n_threads++;
 	}
@@ -583,7 +585,7 @@ check_inputs_low (TAKE_G timeout_t * timeout_org, int is_recursive, select_func_
   if (rc < 0)
     {
       int eno = errno;
-      check_inputs_for_errors (eno, protocol); 
+      check_inputs_for_errors (eno, protocol);
       PROCESS_ALLOW_SCHEDULE ();
       return 0;
     }
@@ -937,6 +939,8 @@ dk_report_error (const char *format, ...)
   return rc;
 }
 
+int dbf_assert_on_malformed_data;
+
 
 void
 sr_report_future_error (dk_session_t * ses, const char *service_name, const char *reason)
@@ -963,6 +967,8 @@ sr_report_future_error (dk_session_t * ses, const char *service_name, const char
 	    reason);
     }
 */
+  if (dbf_assert_on_malformed_data)
+    GPF_T1 ("Malformed data serialization");
 }
 
 #define is_string_type(type)\
@@ -1078,11 +1084,14 @@ future_wrapper (void *ignore)
 
   du_thread_t *this_thread = THREAD_CURRENT_THREAD;
 
+ again:
   {
 
     dbg_printf_2 (("future wrapper point 1 thread %p", this_thread));
     semaphore_enter (this_thread->thr_schedule_sem);	/* XXX: schedule_sem */
     dbg_printf_1 (("future wrapper activated thread %p", this_thread));
+    if ((void*)-1 == this_thread->thr_client_data)
+      return 0;
     c_thread = PROCESS_TO_DK_THREAD (this_thread);
   }
 
@@ -1159,7 +1168,10 @@ future_wrapper (void *ignore)
 		else if (ret_type == DV_C_STRING)
 		  ret_box[0] = box_string (result);
 		else
-		  ret_box[0] = result;
+		  {
+		    ret_box[0] = result;
+		    result = NULL;
+		  }
 	      }
 	    ret_block[DA_MESSAGE_TYPE] = (caddr_t) (long) DA_FUTURE_ANSWER;
 	    ret_block[RRC_COND_NUMBER] = box_num (future->rq_condition);
@@ -1190,8 +1202,19 @@ future_wrapper (void *ignore)
       if (this_thread->thr_reset_code)
 	thr_set_error_code (this_thread, NULL);
       dbg_printf_2 (("Done Future %ld on thread %p", future->rq_condition, this_thread));
-      mutex_enter (thread_mtx);
       F_RETURNED;
+      mutex_enter (thread_mtx);
+      if (DKST_FINISH == client->dks_thread_state && !client->dks_to_close && !client->dks_fixed_thread
+	  && 1 == client->dks_n_threads && !in_basket.bsk_count)
+	{
+	  c_thread->dkt_request_count = 0;
+	  client->dks_thread_state = DKST_IDLE;
+	  client->dks_n_threads = 0;
+	  resource_store (free_threads, (void*)c_thread);
+	  mutex_leave (thread_mtx);
+	  dk_free (future, sizeof (future_request_t));
+	  goto again;
+	}
       client->dks_n_threads--;
       if (client->dks_n_threads < 0 || client->dks_n_threads > MAX_THREADS)
 	{
@@ -1412,7 +1435,7 @@ future_wrapper (void *ignore)
       PROCESS_ALLOW_SCHEDULE ();
     }
   dbg_printf_2 (("future_wrapper exiting on thread %p", this_thread));
-  return 0;
+  goto again;
 }
 
 
@@ -1468,6 +1491,7 @@ future_request_t *
 frq_create (dk_session_t * ses, caddr_t * request)
 {
   future_request_t *future_request = (future_request_t *) dk_alloc (sizeof (future_request_t));
+  caddr_t * args;
   memset (future_request, 0, sizeof (*future_request));
 
   future_request->rq_client = ses;
@@ -1499,13 +1523,22 @@ frq_create (dk_session_t * ses, caddr_t * request)
 
   if (!future_request->rq_service)
     {
-      printf ("\nUnknown service %s requested. req no = %d", request[FRQ_SERVICE_NAME], (int) unbox (request[FRQ_COND_NUMBER]));
+      caddr_t name = request[FRQ_SERVICE_NAME], svc;
+
+      if (IS_BOX_POINTER (name) && DV_TYPE_OF (name) == DV_STRING)
+	svc = name;
+      else
+	svc = "no name";
+
+      printf ("\nUnknown service %s requested. req no = %d", svc, (int) unbox (request[FRQ_COND_NUMBER]));
       dk_free (future_request, sizeof (future_request_t));
       return NULL;
     }
 
   future_request->rq_condition = (long) unbox (request[FRQ_COND_NUMBER]);	/* mty HUHTI */
-  future_request->rq_arguments = (long **) request[FRQ_ARGUMENTS];
+  args = request[FRQ_ARGUMENTS];
+  if (IS_BOX_POINTER (args) && DV_TYPE_OF (args) == DV_ARRAY_OF_POINTER)
+    future_request->rq_arguments = (long **) request[FRQ_ARGUMENTS];
 
   return future_request;
 }
@@ -1583,21 +1616,11 @@ schedule_future:
       return;
     }
   thread = get_free_thread (PASS_G ses);
-  /* If there is a thread for the request, put it underway right off
-     without queuing - oui 020693 */
   if (thread)
     {
-      ss_dprintf_4 (("found free thread %p", thread->dkt_process));
-      reqs_on_the_fly++;
       thread->dkt_requests[0] = future_request;
       thread->dkt_request_count = 1;
       future_request->rq_thread = thread;
-#if 1						 /*!!! */
-      ss_dprintf_2 (("Starting future %ld with thread %p", future_request->rq_condition,
-	      /*future_request->rq_service->sr_name, */ thread->dkt_process));
-#else
-      ss_dprintf_2 (("Starting future %ld %s with thread %p", future_request->rq_condition, future_request->rq_service->sr_name, thread->dkt_process));
-#endif
       if (ses->dks_thread_state != DKST_BURST)
 	{
 	  if (ses->dks_thread_state != DKST_IDLE)
@@ -1626,9 +1649,9 @@ schedule_future:
 	{
 	  thrs_printf ((thrs_fo, "ses %p thr:%p still burst (%s, to_close:%d)\n", ses, THREAD_CURRENT_THREAD, future_request->rq_service ? future_request->rq_service->sr_name : "<no-service>", future_request->rq_to_close));
 	}
-      mutex_leave (thread_mtx);
 
-      semaphore_leave (thread->dkt_process->thr_schedule_sem);	/* XXX: schedule_sem */
+      mutex_leave (thread_mtx);
+      semaphore_leave (thread->dkt_process->thr_schedule_sem);
       check_inputs_action_count++;
     }
   else
@@ -2497,6 +2520,29 @@ dk_session_allocate (int sesclass)
 }
 
 
+dk_session_t *
+dk_session_alloc_box (int sesclass, int in_len)
+{
+  dk_session_t *dk_ses = NULL;
+  session_t *ses;
+  dk_ses = (dk_session_t *) dk_alloc_box (sizeof (dk_session_t), DV_STRING_SESSION);
+  memset (dk_ses, 0, sizeof (dk_session_t));
+  ses = session_allocate (sesclass);
+  SESSION_SCH_DATA (dk_ses) = (scheduler_io_data_t *) dk_alloc (sizeof (scheduler_io_data_t));
+  memset (SESSION_SCH_DATA (dk_ses), 0, sizeof (scheduler_io_data_t));
+  SESSION_SCH_DATA (dk_ses)->sio_is_served = -1;
+  dk_ses->dks_session = ses;
+  SESSION_DK_SESSION (ses) = dk_ses;		 /* two way link. */
+  dk_ses->dks_mtx = mutex_allocate ();
+  dk_ses->dks_in_buffer = (char *) dk_alloc (in_len);
+  dk_ses->dks_in_length = in_len;
+  dk_ses->dks_out_buffer = (char *) dk_alloc (DKSES_OUT_BUFFER_LENGTH);
+  dk_ses->dks_out_length = DKSES_OUT_BUFFER_LENGTH;
+  dk_ses->dks_read_block_timeout.to_sec = 100;
+  dk_ses->dks_refcount = 1;
+  return dk_ses;
+}
+
 void
 dk_session_clear (dk_session_t * ses)
 {
@@ -2584,7 +2630,7 @@ sesclass_select_func (int sesclass)
 #endif /* NO_THREAD */
 
 timeout_t time_now;
-long time_now_msec;
+uint32 time_now_msec;
 
 
 static int
@@ -2690,7 +2736,7 @@ server_loop (void *arg)
   int sesclass = (int) (ptrlong) arg;
   timeout_t zero_timeout = { 0, 0 };
 
-  USE_GLOBAL 
+  USE_GLOBAL
   long time_spent = 0;
   long time_between_rounds = (atomic_timeout.to_sec * 1000 + atomic_timeout.to_usec / 1000) / time_slice;
 
@@ -2750,7 +2796,10 @@ void
 dk_thread_free (void *data)
 {
   dk_thread_t *dkt = (dk_thread_t *) data;
+  du_thread_t  * thr = dkt->dkt_process;
   ASSERT_IN_MTX (thread_mtx);
+  thr->thr_client_data = (void*)-1;
+  semaphore_leave (thr->thr_schedule_sem);
   if (dkt && dkt->dkt_requests[0] && dkt->dkt_request_count)
     dk_free (dkt->dkt_requests[0], sizeof (future_request_t));
   dk_free (dkt, sizeof (dk_thread_t));
@@ -3635,6 +3684,8 @@ PrpcInitialize (void)
 }
 
 
+int enable_malloc_cache = 1;
+
 void
 PrpcInitialize1 (int mem_mode)
 {
@@ -3664,7 +3715,7 @@ PrpcInitialize1 (int mem_mode)
 
   dk_memory_initialize (
 #ifndef NO_THREAD
-      1
+			enable_malloc_cache
 #else
       0
 #endif
@@ -3743,6 +3794,11 @@ PrpcInitialize1 (int mem_mode)
 
 #ifdef _SSL
   ssl_server_init ();
+#endif
+#ifndef NO_THREAD
+#ifdef MALLOC_DEBUG
+  log_info ("*** THIS SERVER BINARY CONTAINS MEMORY DEBUG CODE! ***");
+#endif
 #endif
 }
 
@@ -4681,7 +4737,9 @@ cli_ssl_get_error_string (char *out_data, int out_data_len)
   const char *func = ERR_func_error_string (err);
   out_data[out_data_len - 1] = 0;
   snprintf (out_data, out_data_len - 1, "%s (%s:%s)",
-      reason ? reason : (err == 0 ? "No error" : "Unknown error"), lib ? lib : "?", func ? func : "?");
+      reason ? reason : (err == 0 ? "No error" : "Unknown error"),
+      lib ? lib : "?",
+      func ? func : "?");
   return 0;
 }
 
@@ -4794,7 +4852,6 @@ ssl_cert_verify_callback (int ok, void *_ctx)
   	app_ctx->ssci_name_ptr, errdepth, cp != NULL ? cp : "-unknown-",
 	cp2 != NULL ? cp2 : "-unknown");
 #endif
-
   /*
    * Additionally perform CRL-based revocation checks
    *
@@ -4872,9 +4929,9 @@ dk_ssl_free (void *old)
 #endif
 
 #if defined (_SSL) && !defined (NO_THREAD)
-int ssl_server_set_certificate (SSL_CTX* ssl_ctx, char * cert_name, char * key_name, char * extra);
+int ssl_server_set_certificate (SSL_CTX * ssl_ctx, char *cert_name, char *key_name, char *extra);
 
-static int 
+static int
 ssl_server_key_setup ()
 {
   if (!c_ssl_server_cert || !c_ssl_server_key)
@@ -4921,6 +4978,40 @@ ssl_server_key_setup ()
 }
 #endif
 
+#if !defined(OPENSSL_THREADS)
+#error Must have openssl configures with threads support
+#endif
+
+static dk_mutex_t ** lock_cs;
+
+void
+ssl_locking_callback (int mode, int type, char *file, int line)
+{
+  if (mode & CRYPTO_LOCK)
+    mutex_enter (lock_cs [type]);
+  else
+    mutex_leave (lock_cs [type]);
+}
+
+unsigned long
+ssl_thread_id (void)
+{
+  return (unsigned long) (ptrlong) THREAD_CURRENT_THREAD;
+}
+
+void
+ssl_thread_setup ()
+{
+  int i;
+  lock_cs = dk_alloc (CRYPTO_num_locks() * sizeof (dk_mutex_t *));
+  for (i = 0; i < CRYPTO_num_locks (); i ++)
+    {
+      lock_cs [i] = mutex_allocate ();
+    }
+  CRYPTO_set_locking_callback ((void (*) (int, int, char *, int)) ssl_locking_callback);
+  CRYPTO_set_id_callback ((unsigned long (*)()) ssl_thread_id);
+}
+
 static void
 ssl_server_init ()
 {
@@ -4956,6 +5047,7 @@ ssl_server_init ()
       ERR_print_errors_fp (stderr);
       call_exit (-1);
     }
+  ssl_thread_setup ();
 }
 
 
@@ -5153,7 +5245,7 @@ ssl_server_accept (dk_session_t * listen, dk_session_t * ses)
       new_ssl = SSL_new (ssl_server_ctx);
       SSL_set_fd (new_ssl, dst);
       ssl_err = SSL_accept (new_ssl);
-      if (ssl_err == -1) /* the SSL_accept do the certificate verification */
+      if (ssl_err == -1)	/* the SSL_accept do the certificate verification */
 	{
 	  char client_ip[16];
 	  caddr_t err;

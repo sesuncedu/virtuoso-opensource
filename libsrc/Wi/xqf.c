@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -26,6 +26,7 @@
 #include "CLI.h"
 #include "xmltree.h"
 #include "arith.h"
+#include "geo.h"
 #include "sqlbif.h"
 #include "xml.h"
 #include "date.h"
@@ -384,7 +385,7 @@ __chk_float_string (const char *str)
   for (; *p; p ++, n++ )
     {
       if (NULL == strchr("+-eE.", *p) && (p[0] > '9' || p[0] <'0' ))
-	return -1;;
+	return -1;
 
       if ('.' == p[0])
 	{
@@ -1478,7 +1479,6 @@ __xqf_compare  (xp_instance_t * xqi, XT * tree, xml_entity_t * ctx_xe, int do_wh
       break;
     case XQ_STARTSWITH:
       {
-	utf8char *tail, c;
 	int len = 0, wide_len;
 	caddr_t wide_box = box_utf8_as_wide_char (str1, NULL, strlen (str1), 0, DV_WIDE), utf8_box;
 
@@ -1639,11 +1639,17 @@ xqf_matches (xp_instance_t * xqi, XT * tree, xml_entity_t * ctx_xe)
   val2 = __normalize_arg (val2);
   val3 = __normalize_arg (val3);
 
+  if (!DV_STRINGP (val2))
+    {
+      XQI_SET (xqi, tree->_.xp_func.res, (caddr_t) 0L );
+      return;
+    }
+
   c_opts = xqf_make_regexp_modes (val3);
   xqf_check_regexp (val2, c_opts);
 
   {
-    caddr_t res = regexp_match_01 (val2, val1, c_opts);
+    caddr_t res = DV_STRINGP (val1) ? regexp_match_01 (val2, val1, c_opts) : NULL;
     if (res)
       XQI_SET (xqi, tree->_.xp_func.res, (caddr_t) 1L );
     else
@@ -3545,6 +3551,25 @@ bif_xqf_str_parse_to_rdf_box (caddr_t * qst, caddr_t * err_ret, state_slot_t ** 
           /* test only : xte_word_range(xte,&l1,&l2); */
           return ((caddr_t) xte);
         }
+      if ((!strcmp (type_iri, "http://www.openlinksw.com/schemas/virtrdf#Geometry")
+	   || !strcmp (type_iri, "http://www.opengis.net/ont/geosparql#wktLiteral"))
+	  && DV_STRING == arg_dtp)
+	{
+	  caddr_t err = NULL;
+	  caddr_t g = geo_parse_wkt (arg, &err);
+	  if (err && !suppress_error)
+	    sqlr_resignal (err);
+	  if (!err)
+	    {
+	      rdf_box_t * rb = rb_allocate ();
+	      geo_calc_bounding (g, GEO_CALC_BOUNDING_DO_ALL);
+	      rb->rb_type = RDF_BOX_GEO;
+	      rb->rb_lang = RDF_BOX_DEFAULT_LANG;
+	      rb->rb_box = g;
+	      rb->rb_is_complete = 1;
+	      return (caddr_t) rb;
+	    }
+	}
       return NEW_DB_NULL;
     }
   p_name = type_iri + XMLSCHEMA_NS_URI_LEN + 1; /* +1 is to skip '#' */
@@ -3617,23 +3642,41 @@ res_ready:
   return res;
 }
 
+#define XQF_STR_FN(n) \
+caddr_t bif_xqf_str_parse_##n (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args) \
+{ \
+  return bif_xqf_str_parse (qst, err_ret, args); \
+}
+
+XQF_STR_FN(boolean)
+XQF_STR_FN(date)
+XQF_STR_FN(datetime)
+XQF_STR_FN(double)
+XQF_STR_FN(float)
+XQF_STR_FN(integer)
+XQF_STR_FN(numeric)
+XQF_STR_FN(nvarchar)
+XQF_STR_FN(time)
 
 /* TO DO: the whole list 5.7.1 */
 void xqf_init(void)
 {
   st_double =  (sql_tree_tmp *) list (3, DV_DOUBLE_FLOAT, (ptrlong)0, (ptrlong)0);
 
-  bif_define ("__xqf_str_parse", bif_xqf_str_parse);
+  bif_define_ex ("__xqf_str_parse", bif_xqf_str_parse, BMD_ALIAS, "__xqf_str_parse_boolean", BMD_ALIAS, "__xqf_str_parse_date", BMD_ALIAS, "__xqf_str_parse_datetime", BMD_ALIAS, "__xqf_str_parse_double", BMD_ALIAS, "__xqf_str_parse_float", BMD_ALIAS, "__xqf_str_parse_integer", BMD_ALIAS, "__xqf_str_parse_numeric", BMD_ALIAS, "__xqf_str_parse_nvarchar", BMD_ALIAS, "__xqf_str_parse_time",
+    BMD_RET_TYPE, &bt_any, BMD_DONE );
   bif_define ("__xqf_str_parse_to_rdf_box", bif_xqf_str_parse_to_rdf_box);
-  bif_define_typed ("__xqf_str_parse_boolean"	, bif_xqf_str_parse	, &bt_integer	);
-  bif_define_typed ("__xqf_str_parse_date"	, bif_xqf_str_parse	, &bt_date	);
-  bif_define_typed ("__xqf_str_parse_datetime"	, bif_xqf_str_parse	, &bt_datetime	);
-  bif_define_typed ("__xqf_str_parse_double"	, bif_xqf_str_parse	, &bt_double	);
-  bif_define_typed ("__xqf_str_parse_float"	, bif_xqf_str_parse	, &bt_float	);
-  bif_define_typed ("__xqf_str_parse_integer"	, bif_xqf_str_parse	, &bt_integer	);
-  bif_define_typed ("__xqf_str_parse_numeric"	, bif_xqf_str_parse	, &bt_numeric	);
-  bif_define_typed ("__xqf_str_parse_nvarchar"	, bif_xqf_str_parse	, &bt_wvarchar	);
-  bif_define_typed ("__xqf_str_parse_time"	, bif_xqf_str_parse	, &bt_time	);
+#if 0
+  bif_define_typed ("__xqf_str_parse_boolean"	, bif_xqf_str_parse	, &bt_any /* was &bt_integer */		);
+  bif_define_typed ("__xqf_str_parse_date"	, bif_xqf_str_parse	, &bt_any /* was &bt_date */		);
+  bif_define_typed ("__xqf_str_parse_datetime"	, bif_xqf_str_parse	, &bt_any /* was &bt_datetime */	);
+  bif_define_typed ("__xqf_str_parse_double"	, bif_xqf_str_parse	, &bt_any /* was &bt_double */		);
+  bif_define_typed ("__xqf_str_parse_float"	, bif_xqf_str_parse	, &bt_any /* was &bt_float */		);
+  bif_define_typed ("__xqf_str_parse_integer"	, bif_xqf_str_parse	, &bt_any /* was &bt_integer */		);
+  bif_define_typed ("__xqf_str_parse_numeric"	, bif_xqf_str_parse	, &bt_any /* was &bt_numeric */		);
+  bif_define_typed ("__xqf_str_parse_nvarchar"	, bif_xqf_str_parse	, &bt_any /* was &bt_wvarchar */	);
+  bif_define_typed ("__xqf_str_parse_time"	, bif_xqf_str_parse	, &bt_any /* was &bt_time */		);
+#endif
 
   /* Functions */
   x2f_define_builtin ("ENTITY"					, NULL /*xqf_entity*/		/* ??? */	, DV_SHORT_STRING , 1	, xpfmalist(1, xpfma(NULL,DV_SHORT_STRING,1))	, NULL);

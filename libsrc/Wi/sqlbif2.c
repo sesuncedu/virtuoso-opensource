@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -548,12 +548,15 @@ float compiler_unit_msecs = 0;
 
 #define COL_COUNT "select count (*) from SYS_COLS a table option (index primary key) where  exists (select 1 from SYS_COLS b table option (loop) where a.\"TABLE\" = b.\"TABLE\" and a.\"COLUMN\" = b.\"COLUMN\")"
 
+extern int enable_vec_cost;
 void
-srv_calculate_sqlo_unit_msec (void)
+srv_calculate_sqlo_unit_msec (char* stmt)
 {
   caddr_t err = NULL;
+  int deflt_stmt = 0;
   caddr_t score_box;
   float score;
+  int save_qp = enable_qp;
   float start_time, end_time;
   local_cursor_t *lc_tim = NULL;
   query_t *qr = NULL;
@@ -565,8 +568,14 @@ srv_calculate_sqlo_unit_msec (void)
   old_tb_count = sys_cols_tb->tb_count;
   sys_cols_tb->tb_count = wi_inst.wi_schema->sc_id_to_col->ht_count;
 
-  qr = sql_compile (COL_COUNT, cli, &err, SQLC_DEFAULT);
+  if (!stmt)
+    {
+      deflt_stmt = 1;
+      stmt = COL_COUNT;
+    }
+  qr = sql_compile (stmt, cli, &err, SQLC_DEFAULT);
   start_time = (float) get_msec_real_time ();
+  enable_qp = 1;
   for (inx = 0; inx < SQLO_NITERS; inx++)
     { /* repeat enough times as sys_cols is usually not very big */
       err = qr_quick_exec (qr, cli, NULL, &lc_tim, 0);
@@ -581,14 +590,16 @@ srv_calculate_sqlo_unit_msec (void)
         }
     }
   end_time = (float) get_msec_real_time ();
+  enable_qp = save_qp;
   qr_free (qr);
 
-  score_box = (caddr_t) sql_compile (COL_COUNT, cli, &err, SQLC_SQLO_SCORE);
+  score_box = (caddr_t) sql_compile (stmt, cli, &err, SQLC_SQLO_SCORE);
   score = unbox_float (score_box);
   /*printf ("cu score = %f\n", score);*/
   dk_free_tree (score_box);
   compiler_unit_msecs = (end_time - start_time) / (score * inx);
-
+  if (deflt_stmt && enable_vec_cost)
+    compiler_unit_msecs /= 4.339062;
   sys_cols_tb->tb_count = old_tb_count;
   local_commit (bootstrap_cli);
   log_info ("Compiler unit is timed at %f msec", (double) compiler_unit_msecs);
@@ -1138,12 +1149,12 @@ rfc1808_expand_uri (/*query_instance_t *qi,*/ ccaddr_t base_uri, ccaddr_t rel_ur
     }
   if ((base_cs != buffer_cs_upcase) && !((NULL != base_cs) && (NULL != buffer_cs_upcase) && !strcmp (base_cs, buffer_cs_upcase)))
     {
-      base_uri = charset_recode_from_named_to_named ((query_instance_t *)NULL, (caddr_t)base_uri, base_cs, buffer_cs_upcase, &base_uri_is_temp, err_ret);
+      base_uri = charset_recode_from_named_to_named ((caddr_t)base_uri, base_cs, buffer_cs_upcase, &base_uri_is_temp, err_ret);
       if (err_ret[0]) goto res_complete; /* see below */
     }
   if ((rel_cs != buffer_cs_upcase) && !((NULL != rel_cs) && (NULL != buffer_cs_upcase) && !strcmp (rel_cs, buffer_cs_upcase)))
     {
-      rel_uri = charset_recode_from_named_to_named ((query_instance_t *)NULL, (caddr_t)rel_uri, rel_cs, buffer_cs_upcase, &rel_uri_is_temp, err_ret);
+      rel_uri = charset_recode_from_named_to_named ((caddr_t)rel_uri, rel_cs, buffer_cs_upcase, &rel_uri_is_temp, err_ret);
       if (err_ret[0]) goto res_complete; /* see below */
     }
   if ((NULL == base_uri) || ('\0' == base_uri[0]))
@@ -1349,7 +1360,7 @@ buffer_ready:
     ((NULL == buffer_cs_upcase) || (NULL == output_cs_upcase) || strcmp(buffer_cs_upcase, output_cs_upcase)) )
     {
       caddr_t boxed_buffer = box_dv_short_nchars (buffer, buf_tail - buffer);
-      res = charset_recode_from_named_to_named ((query_instance_t *)NULL, boxed_buffer, buffer_cs_upcase, output_cs_upcase, &res_is_new, err_ret);
+      res = charset_recode_from_named_to_named (boxed_buffer, buffer_cs_upcase, output_cs_upcase, &res_is_new, err_ret);
       if (res_is_new)
         dk_free_box (boxed_buffer);
       else
@@ -1561,6 +1572,32 @@ static char restricted_xml_chars[0x80] = {
   return NULL;
 }
 
+static const char *cl_sequence_set_text =
+" create procedure cl_sequence_set (in _name varchar, in _count int, in _mode int)\n"
+"{\n"
+"if (sys_stat (\'cl_master_host\') = sys_stat (\'cl_this_host\'))\n"
+"{\n"
+"__sequence_set (\'__MAX__\' || _name, 0, 0);\n"
+"__sequence_set (\'__NEXT__\' || _name, _count, _mode);\n"
+"__sequence_set (_name, _count, _mode);\n"
+"}\n"
+"else\n"
+"{\n"
+"__sequence_set (\'__MAX__\' || _name, 0, 0);\n"
+"__sequence_set (_name, 0, _mode);\n"
+"}\n"
+"}\n"
+;
+
+static const char *sequence_set_text =
+" create procedure sequence_set (in _name varchar, in _count int, in _mode int)\n"
+"{\n"
+"if (sys_stat (\'cl_run_local_only\') or _mode = 2)\n"
+"return __sequence_set (_name, _count, _mode);\n"
+"else\n"
+"cl_exec (\'cl_sequence_set (?, ?, ?)\', vector (_name, _count, _mode), txn => 1);\n"
+"}\n"
+;
 
 
 /*
@@ -1698,11 +1735,6 @@ bif_this_server (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
   return NEW_DB_NULL;
 }
-static caddr_t
-bif_is_geometry (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
-{
-  return box_num (0);
-}
 
 void
 sqlbif2_init (void)
@@ -1710,33 +1742,32 @@ sqlbif2_init (void)
   pwnam_mutex = mutex_allocate ();
   mutex_option (pwnam_mutex, "pwnam_mutex", NULL, NULL);
 #ifndef KEYCOMP
-  bif_define_typed ("itc_dive_transit_call_ctr", bif_itc_dive_transit_call_ctr, &bt_integer);
-  bif_define_typed ("itc_try_land_call_ctr", bif_itc_try_land_call_ctr, &bt_integer);
+  bif_define_ex ("itc_dive_transit_call_ctr", bif_itc_dive_transit_call_ctr, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("itc_try_land_call_ctr", bif_itc_try_land_call_ctr, BMD_RET_TYPE, &bt_integer, BMD_DONE);
 #endif
   bif_define ("__ddl_read_constraints", bif_ddl_read_constraints);
-  bif_define_typed ("sys_lockdown", bif_sys_lockdown, &bt_integer);
-  bif_define_typed ("__blob_handle_from_session", bif_blob_handle_from_session, &bt_blob_handle);
-  bif_define_typed ("os_chmod", bif_os_chmod, &bt_varchar);
-  bif_define_typed ("host_id", bif_host_id, &bt_varchar);
-  bif_define_typed ("os_chown", bif_os_chown, &bt_varchar);
-  bif_define_typed ("user_has_role", bif_user_has_role, &bt_integer);
-  bif_define_typed ("user_is_dba", bif_user_is_dba, &bt_integer);
-  bif_define_typed ("client_attr", bif_client_attr, &bt_integer);
-  bif_define_typed ("query_instance_id", bif_query_instance_id, &bt_integer);
+  bif_define_ex ("sys_lockdown", bif_sys_lockdown, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("__blob_handle_from_session", bif_blob_handle_from_session, BMD_RET_TYPE, &bt_blob_handle, BMD_DONE);
+  bif_define_ex ("os_chmod", bif_os_chmod, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("host_id", bif_host_id, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("os_chown", bif_os_chown, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("user_has_role", bif_user_has_role, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("user_is_dba", bif_user_is_dba, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("client_attr", bif_client_attr, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("query_instance_id", bif_query_instance_id, BMD_RET_TYPE, &bt_integer, BMD_DONE);
   bif_define ("sql_warning", bif_sql_warning);
   bif_define ("sql_warnings_resignal", bif_sql_warnings_resignal);
-  bif_define_typed ("__sec_uid_to_user", bif_sec_uid_to_user, &bt_varchar);
+  bif_define_ex ("__sec_uid_to_user", bif_sec_uid_to_user, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define ("current_proc_name", bif_current_proc_name);
   bif_define ("zorder_index", bif_zorder_index);
   bif_define ("rfc1808_parse_uri", bif_rfc1808_parse_uri);
   bif_define ("rfc1808_expand_uri", bif_rfc1808_expand_uri);
   bif_define ("patch_restricted_xml_chars", bif_patch_restricted_xml_chars);
-  bif_define_typed ("format_number", bif_format_number, &bt_varchar);
+  bif_define_ex ("format_number", bif_format_number, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define ("__stop_cpt", bif_stop_cpt);
   bif_define ("soundex", bif_soundex);
   bif_define ("difference", bif_difference);
-  bif_define ("repl_this_server", bif_this_server);
-  bif_define ("isgeometry", bif_is_geometry);
+  /*bif_define ("repl_this_server", bif_this_server);*/
   /*sqls_bif_init ();*/
   sqls_bif_init ();
   sqlo_inv_bif_int ();
@@ -1746,7 +1777,13 @@ void
 sqlbif_sequence_init (void)
 {
   /* sequence_set bifs */
-  bif_define_typed ("sequence_set", bif_sequence_set, &bt_integer);
+  ddl_std_proc_1 (sequence_set_text, 0x1, 1);
+  ddl_std_proc_1 (cl_sequence_set_text, 0x1, 1);
+  pl_bif_name_define ("cl_sequence_set");
+  pl_bif_name_define ("sequence_set");
+#if 0
+  bif_define_ex ("sequence_set", bif_sequence_set, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+#endif
 }
 
 /* This should stay the last part of the file */

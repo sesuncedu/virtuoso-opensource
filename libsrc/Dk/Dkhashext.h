@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -36,7 +36,7 @@ operations on an initial seed, all intermediate results should be
 unsigned and 32-bits, even if the platform is 64 bit, to have reproducible
 errors */
 typedef uint32 id_hashed_key_t;
-#define ID_HASHED_KEY_MASK 		0xFFFffff
+#define ID_HASHED_KEY_MASK 		0x7FFFffff
 #ifdef DEBUG
 #define ID_HASHED_KEY_CHECK(i) \
   do { \

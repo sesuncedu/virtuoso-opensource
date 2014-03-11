@@ -4,7 +4,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2013 OpenLink Software
+ *  Copyright (C) 1998-2014 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -463,11 +463,17 @@ extern void sparp_simplify_expns (sparp_t *sparp, SPART *req_top);
 
 extern void spar_invalidate_binv_dataset_row (sparp_t *sparp, SPART *binv, int rowno, int reason_col);
 
-/*! Removes data rows from \c binv as soon as they conflict with equivs of variables in any single cell. As a side effect, unused sprintf formats are remvoed from equivs. */
+/*! Removes data rows from \c binv as soon as they conflict with equivs of variables in any single cell. As a side effect, unused sprintf formats are removed from equivs. */
 extern void spar_shorten_binv_dataset (sparp_t *sparp, SPART *binv);
 
 /*! Re-calculates common properties of \c binv variables by values in their data columns. Any UNBOUND in column disables the re-calculation. */
 extern void spar_refresh_binv_var_rvrs (sparp_t *sparp, SPART *binv);
+
+/*! Checks whether a single-column binv without UNSETs and duplicates can be replaced with FILTER (?var IN ( values )) on a gspo or otherwise set variable */
+extern int spar_binv_is_convertible_to_filter (sparp_t *sparp, SPART *parent_gp, SPART *member_gp, SPART *member_binv);
+
+/*! Replace binv with FILTER (?var IN ( values )) . No checks are made in this function, the check must be made before via \c spar_binv_is_convertible_to_filter () */
+extern void spar_binv_to_filter (sparp_t *sparp, SPART *parent_gp, SPART *member_gp, SPART *member_binv);
 
 /*! Returns triple that contains the given variable \c var as a field.
 If \c gp is not NULL the search is restricted by triples that
@@ -527,17 +533,17 @@ extern quad_map_t *sparp_find_quad_map_by_name (ccaddr_t name);
 #define SSG_QM_MATCH_AND_CUT	5	/*!< SSG_QM_APPROX_MATCH plus qm is soft/hard exclusive so red cut and no more search for possible quad maps of lower priority */
 
 typedef struct tc_context_s {
-  SPART *tcc_triple;		/*!< Triple pattern in question */
-  int tcc_check_source_graphs;	/*!< Nonzero if \c tcc_sources contains nonzero number of graphs so it forms the restriction that should be checked */
-  SPART **tcc_sources;		/*!< Source graphs that can be used */
-  uint32 *tcc_source_invalidation_masks;	/*!< String of integers, nonzero means that the source graph with same index in \c tcc_sourcess has failed some restriction at some level of nested quad maps. 0x1 is for global restriction by type, 0x2 is for RDF views etc. SPAN_NOT_FROM_xxx are never masked, of course */
-  quad_storage_t *tcc_qs;	/*!< Quad storage in question */
-  quad_map_t *tcc_top_allowed_qm;	/*!< Top qm that is allowed, if it is specified in the triple */
+  SPART *		tcc_triple;			/*!< Triple pattern in question */
+  int			tcc_check_source_graphs;	/*!< Nonzero if \c tcc_sources contains nonzero number of graphs so it forms the restriction that should be checked */
+  SPART **		tcc_sources;			/*!< Source graphs that can be used */
+  uint32 *		tcc_source_invalidation_masks;	/*!< String of integers, nonzero means that the source graph with same index in \c tcc_sourcess has failed some restriction at some level of nested quad maps. 0x1 is for global restriction by type, 0x2 is for RDF views etc. SPAN_NOT_FROM_xxx are never masked, of course */
+  quad_storage_t *	tcc_qs;				/*!< Quad storage in question */
+  quad_map_t **		tcc_top_allowed_qms;		/*!< Top qms that are allowed, if some are specified in the triple via QUAD MAP xx { } */
   void *tcc_last_qmvs [SPART_TRIPLE_FIELDS_COUNT];	/*!< Pointers to recently checked QMVs or constants. QMVs tend to repeat in sequences. */
   int tcc_last_qmv_results [SPART_TRIPLE_FIELDS_COUNT];	/*!< Results of recent comparisons. */
   dk_set_t tcc_cuts [SPART_TRIPLE_FIELDS_COUNT];	/*!< Accumulated red cuts for possible values of fields */
-  dk_set_t tcc_found_cases;		/*!< Accumulated triple cases */
-  int tcc_nonfiltered_cases_found;	/*!< Count of triples cases that passed tests, including cases rejected due to QUAD MAP xx { } restriction of triple */
+  dk_set_t		tcc_found_cases;		/*!< Accumulated triple cases */
+  int			tcc_nonfiltered_cases_found;	/*!< Count of triples cases that passed tests, including cases rejected due to QUAD MAP xx { } restriction of triple */
 } tc_context_t;
 
 /*! This checks if the given \c qm may contain data that matches \c tcc->tcc_triple by itself,
@@ -821,7 +827,15 @@ struct rdf_ds_s;
 #define SSG_VALMODE_SPECIAL		((ssg_valmode_t)((ptrlong)(0x380)))
 /* typedef struct rdf_ds_field_s *ssg_valmode_t; -- moved to sparql.h */
 
-extern ssg_valmode_t ssg_smallest_union_valmode (ssg_valmode_t m1, ssg_valmode_t m2);
+/*! \c returns smallest valmode that can keep values from both \c m1 and \c m2.
+In addition to the returned value it can set \c sqlval_is_ok_and_cheap_ret[0] to zero if the sqlval of either \c m1 or \c m2 is not cheap.
+sqlval of SSG_VALMODE_AUTO is cheap because "auto" can become sqlval when needed and the conversion is not needed at all.
+sqlval SSG_VALMODE_SHORT_OR_LONG \c m1 or \c m2 is not cheap.
+SSG_VALMODE_LONG \c m1 is not cheap by default but can be treated as cheap if \c sqlval_is_ok_and_cheap_ret[0] has bit 0x2 set:
+this bit is convenient if \c m1 is a result of previous ssg_smallest_union_valmode() of other members of same union.
+Similarly, SSG_VALMODE_LONG \c m1 is not cheap by default but can be treated as cheap if \c sqlval_is_ok_and_cheap_ret[0] has bit 0x4 set:
+this is primarily for internal use when ssg_smallest_union_valmode() calls itself with swapped arguments. */
+extern ssg_valmode_t ssg_smallest_union_valmode (ssg_valmode_t m1, ssg_valmode_t m2, int *sqlval_is_ok_and_cheap_ret);
 extern ssg_valmode_t ssg_largest_intersect_valmode (ssg_valmode_t m1, ssg_valmode_t m2);
 extern ssg_valmode_t ssg_largest_eq_valmode (ssg_valmode_t m1, ssg_valmode_t m2);
 extern int ssg_valmode_is_subformat_of (ssg_valmode_t m1, ssg_valmode_t m2);

@@ -1,10 +1,10 @@
 --  
---  $Id$
+--  $Id: nntp_suite.sql,v 1.20.10.2 2013/01/02 16:14:42 source Exp $
 --  
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --  
---  Copyright (C) 1998-2013 OpenLink Software
+--  Copyright (C) 1998-2014 OpenLink Software
 --  
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -341,7 +341,8 @@ ECHO BOTH $IF $EQU $STATE "OK" "PASSED" "***FAILED";
 SET ARGV[$LIF] $+ $ARGV[$LIF] 1;
 ECHO BOTH ": NNTP Prepare data for bug4482 : STATE=" $STATE " MESSAGE=" $MESSAGE "\n";
 
-delete from NEWS_MSG where NM_ID='<zMRYcqp4CHA.1460@cpmsftngxa06>';
-ECHO BOTH $IF $EQU $ROWCNT 1 "PASSED" "***FAILED";
-SET ARGV[$LIF] $+ $ARGV[$LIF] 1;
-ECHO BOTH ": NNTP bug4482 : STATE=" $STATE " MESSAGE=" $MESSAGE "\n";
+-- XXX
+--delete from NEWS_MSG where NM_ID='<zMRYcqp4CHA.1460@cpmsftngxa06>';
+--ECHO BOTH $IF $EQU $ROWCNT 1 "PASSED" "***FAILED";
+--SET ARGV[$LIF] $+ $ARGV[$LIF] 1;
+--ECHO BOTH ": NNTP bug4482 : STATE=" $STATE " MESSAGE=" $MESSAGE "\n";
